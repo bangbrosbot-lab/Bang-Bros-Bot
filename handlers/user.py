@@ -2,10 +2,10 @@ import html
 from aiogram import Router, F, types, Bot
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
 from db import Database
 from config import ADMIN_ID
-from keyboards import main_menu, channels_kb
+from keyboards import main_menu, channels_kb, blocked_menu
 from states import TopUp
 
 router = Router()
@@ -66,12 +66,20 @@ async def subscribed(bot, db, uid):
 
 async def ask_sub(m, db):
     channels = await db.mandatory()
-    await m.answer('Botdan foydalanish uchun quyidagi kanallarga obuna bo‘ling!', reply_markup=channels_kb(channels))
+    for ch in channels:
+        if not ch['title']:
+            try:
+                chat=await m.bot.get_chat(ch['channel_id']); title=chat.title or chat.username or str(ch['channel_id'])
+                await db.add_channel(ch['channel_id'],ch['kind'],ch['join_url'],title)
+            except Exception: pass
+    channels = await db.mandatory()
+    await m.answer('Botdan foydalanish uchun quyidagi kanallarga obuna bo‘ling!', reply_markup=ReplyKeyboardRemove())
+    await m.answer('Quyidagi kanallarga obuna bo‘ling:', reply_markup=channels_kb(channels))
 
 async def welcome(m, bot, db, user=None):
     user = user or m.from_user
     text = (f"Salom, {user.first_name}! Bang Bros’ga xush kelibsiz!\n\n"
-            "Videolarni tomosha qilish uchun maxsus kanalimizga kiring va o‘zingizga yoqqan videoni tanlab, videoni ko‘rish tugmasini bosing!")
+            "Videolarni tomosha qilish uchun maxsus kanalimizga kiring va o‘zingizga yoqqan videoni tanlab, «Videoni ko‘rish» tugmasini bosing!")
     special = next((x for x in await db.all_channels() if x['kind'] == 'special'), None)
     rows = []
     if special:
@@ -137,7 +145,7 @@ async def start(m: types.Message, command: CommandStart, db: Database, bot: Bot,
     is_new = await db.add_user(m.from_user.id, m.from_user.full_name, m.from_user.username, ref)
     u = await db.user(m.from_user.id)
     if u['blocked']:
-        return await m.answer('Botdan foydalanish huquqingiz cheklangan.')
+        return await m.answer('Siz botdan butunlay blocklandingiz. Sababini bilmoqchi bo‘lsangiz Yordam bo‘limidan adminga murojaat qiling.', reply_markup=blocked_menu())
     if m.from_user.id == ADMIN_ID or await db.is_admin(m.from_user.id):
         from keyboards import admin_menu, limited_admin_menu
         menu=admin_menu() if m.from_user.id==ADMIN_ID else limited_admin_menu()
@@ -148,12 +156,14 @@ async def start(m: types.Message, command: CommandStart, db: Database, bot: Bot,
         if valid_ref:
             bonus = int(await db.setting('referral_bonus') or 500)
             credited = await db.credit_referral(m.from_user.id, valid_ref, bonus)
-        await notify_new_user(bot, m.from_user, valid_ref if credited else None)
+        await notify_new_user(bot, m.from_user, valid_ref if valid_ref and await db.user(valid_ref) else None)
     if not await subscribed(bot, db, m.from_user.id):
         return await ask_sub(m, db)
     if command.args and command.args.startswith('video_'):
         try:
-            return await deliver_teaser(m, db, int(command.args.split('_', 1)[1]))
+            await deliver_teaser(m, db, int(command.args.split('_', 1)[1]))
+            await m.answer('Asosiy menyu', reply_markup=main_menu())
+            return
         except Exception:
             pass
     await welcome(m, bot, db)
@@ -175,6 +185,8 @@ async def full(call: types.CallbackQuery, db: Database):
     u = await db.user(call.from_user.id)
     if not u or u['blocked']:
         return await call.answer('Botdan foydalanish huquqingiz cheklangan.', show_alert=True)
+    if not await subscribed(call.bot,db,call.from_user.id):
+        await ask_sub(call.message,db); return await call.answer()
     vid = int(call.data.split(':')[1])
     if not await db.vip(call.from_user.id):
         return await call.answer('Afsuski, hozircha ushbu videoning to‘liq versiyasini ko‘ra olmaysiz. To‘liq videolarni tomosha qilish uchun VIP obuna xarid qilishingiz kerak!', show_alert=True)
@@ -185,10 +197,14 @@ async def full(call: types.CallbackQuery, db: Database):
     q = qs[0]; views = await db.view_count(vid)
     await call.message.answer_video(q['file_id'], caption=f'{v["caption"]}\n\nSifati: {q["quality"]}\nKo‘rishlar: {views}', reply_markup=InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text='Video sifatini almashtirish', callback_data=f'change:{vid}')]]), protect_content=True)
+    await call.message.answer('Asosiy menyu', reply_markup=main_menu())
     await call.answer()
 
 @router.callback_query(F.data.startswith('change:'))
 async def change(call: types.CallbackQuery, db: Database):
+    u=await db.user(call.from_user.id)
+    if not u or u['blocked']: return await call.answer('Botdan foydalanish huquqingiz cheklangan.',show_alert=True)
+    if not await subscribed(call.bot,db,call.from_user.id): await ask_sub(call.message,db); return await call.answer()
     vid = int(call.data.split(':')[1]); qs = await db.qualities(vid)
     if not await db.vip(call.from_user.id):
         return await call.answer('VIP obuna talab qilinadi.', show_alert=True)
@@ -200,6 +216,9 @@ async def change(call: types.CallbackQuery, db: Database):
 
 @router.callback_query(F.data.startswith('quality:'))
 async def quality(call: types.CallbackQuery, db: Database):
+    u=await db.user(call.from_user.id)
+    if not u or u['blocked']: return await call.answer('Botdan foydalanish huquqingiz cheklangan.',show_alert=True)
+    if not await subscribed(call.bot,db,call.from_user.id): await ask_sub(call.message,db); return await call.answer()
     _, vid, q = call.data.split(':', 2); vid = int(vid)
     if not await db.vip(call.from_user.id):
         return await call.answer('VIP obuna talab qilinadi.', show_alert=True)
@@ -211,6 +230,7 @@ async def quality(call: types.CallbackQuery, db: Database):
     except Exception: pass
     await call.message.answer_video(chosen['file_id'], caption=f'{v["caption"]}\n\nSifati: {q}\nKo‘rishlar: {views}', reply_markup=InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text='Video sifatini almashtirish', callback_data=f'change:{vid}')]]), protect_content=True)
+    await call.message.answer('Asosiy menyu', reply_markup=main_menu())
     await call.answer()
 
 @router.callback_query(F.data.startswith('vote:'))
@@ -225,20 +245,47 @@ async def vote(call: types.CallbackQuery, db: Database, bot: Bot):
     except Exception:
         await call.answer('Ovoz qabul qilinmadi.', show_alert=True)
 
+@router.callback_query(F.data.startswith('advote:'))
+async def ad_vote(call:types.CallbackQuery,db:Database):
+    try:
+        _,raw_campaign,raw_option=call.data.split(':'); campaign_id=int(raw_campaign); option=int(raw_option)
+        campaign=await db.ad_campaign(campaign_id)
+        if not campaign: return await call.answer('Reklama ovoz berish muddati tugagan.',show_alert=True)
+        import json
+        options=json.loads(campaign['like_options'] or '[]')
+        if option<0 or option>=len(options): return await call.answer('Noto‘g‘ri ovoz.',show_alert=True)
+        await db.ad_vote(campaign_id,call.from_user.id,option); counts=await db.ad_vote_counts(campaign_id)
+        url_rows=json.loads(campaign['url_buttons'] or '[]'); layout=json.loads(campaign['like_layout'] or '[]')
+        rows=[[InlineKeyboardButton(text=b['text'],url=b['url']) for b in row] for row in url_rows]
+        for row in layout:
+            rows.append([InlineKeyboardButton(text=f"{item['text']} ({counts.get(item['index'],0)})",callback_data=f"advote:{campaign_id}:{item['index']}") for item in row])
+        await call.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+        await call.answer('Ovozingiz qabul qilindi.')
+    except Exception:
+        await call.answer('Ovoz qabul qilinmadi.',show_alert=True)
+
+async def send_cabinet(target,uid,db):
+    u=await db.user(uid)
+    if not u: return await target.answer('Avval /start buyrug‘ini bosing.')
+    vip=await db.vip(uid); friends=await db.referrals_count(uid)
+    status='VIP obunachi' if vip else 'Oddiy obunachi'
+    total_balance=int(u['balance'] or 0)+int(u['referral_balance'] or 0)
+    return await target.answer(f'Ism: {u["name"]}\nUser: @{u["username"] or "mavjud emas"}\nID: {u["user_id"]}\nBalans: {total_balance:,} so‘m\nHolati: {status}\nDo‘stlar: {friends}',reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text='Hisobni to‘ldirish',callback_data='topup'),InlineKeyboardButton(text='VIP olish',callback_data='vipmenu')],
+        [InlineKeyboardButton(text='Pul ishlash',callback_data='referral')]]))
+
 @router.message(F.text == 'Kabinet')
 async def cabinet(m: types.Message, db: Database, state:FSMContext):
-    await state.clear()
-    u = await db.user(m.from_user.id)
-    if not u: return await m.answer('Avval /start buyrug‘ini bosing.')
-    vip = await db.vip(m.from_user.id); friends = await db.referrals_count(m.from_user.id)
-    status = 'VIP obunachi' if vip else 'Oddiy obunachi'
-    total_balance = int(u['balance'] or 0) + int(u['referral_balance'] or 0)
-    await m.answer(f'Ism: {u["name"]}\nUser: @{u["username"] or "mavjud emas"}\nID: {u["user_id"]}\nBalans: {total_balance:,} so‘m\nHolati: {status}\nDo‘stlar: {friends}', reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text='Hisobni to‘ldirish', callback_data='topup'), InlineKeyboardButton(text='VIP olish', callback_data='vipmenu')],
-        [InlineKeyboardButton(text='Pul ishlash', callback_data='referral')]]))
+    u0=await db.user(m.from_user.id)
+    if u0 and u0['blocked']: return await m.answer('Siz botdan butunlay blocklandingiz. Sababini bilmoqchi bo‘lsangiz Yordam bo‘limidan adminga murojaat qiling.',reply_markup=blocked_menu())
+    if not await subscribed(m.bot,db,m.from_user.id): return await ask_sub(m,db)
+    await state.clear(); await send_cabinet(m,m.from_user.id,db)
 
 @router.callback_query(F.data == 'topup')
-async def topup(call: types.CallbackQuery, state: FSMContext):
+async def topup(call: types.CallbackQuery, state: FSMContext,db:Database):
+    u=await db.user(call.from_user.id)
+    if not u or u['blocked']: return await call.answer('Botdan foydalanish huquqingiz cheklangan.',show_alert=True)
+    if not await subscribed(call.bot,db,call.from_user.id): await ask_sub(call.message,db); return await call.answer()
     await state.clear(); await state.set_state(TopUp.amount); await user_prompt(call.message,state,'To‘ldirmoqchi bo‘lgan summangizni yozing! Masalan: 10000'); await call.answer()
 
 @router.message(TopUp.amount, F.text.in_({'Kabinet','Yordam','Bot haqida'}))
@@ -252,8 +299,8 @@ async def interrupt_topup(m:types.Message,state:FSMContext,db:Database):
 async def topup_amount(m: types.Message, state: FSMContext, db: Database):
     try: amount = int((m.text or '').replace(' ', '').replace(',', ''))
     except Exception: return await m.answer('Summani raqam bilan kiriting.')
-    if amount < 5000 or amount > 900000:
-        return await m.answer('Eng kam summa 5 000, eng ko‘p summa 900 000 so‘m.')
+    if amount < 3000:
+        return await m.answer('Eng kam to‘ldirish summasi 3 000 so‘m. Iltimos, bundan kam bo‘lmagan summa kiriting.')
     await state.update_data(amount=amount); await state.set_state(TopUp.receipt)
     card = await db.setting('card')
     amount_text=f'{amount:,}'.replace(',', ' ')
@@ -264,14 +311,20 @@ async def topup_amount(m: types.Message, state: FSMContext, db: Database):
 async def receipt(m: types.Message, state: FSMContext, db: Database, bot: Bot):
     data = await state.get_data(); rid = await db.create_topup(m.from_user.id, data['amount'], m.photo[-1].file_id)
     username = f'@{m.from_user.username}' if m.from_user.username else 'Mavjud emas'
-    await bot.send_photo(ADMIN_ID, m.photo[-1].file_id,
-        caption=(f'Hisobni to‘ldirish so‘rovi\n\nIsmi: {m.from_user.full_name}\nUser: {username}\nID: {m.from_user.id}\nSumma: {data["amount"]:,}'.replace(',', ' ')+' so‘m'),
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='Tasdiqlash', callback_data=f'topupok:{rid}'), InlineKeyboardButton(text='Rad etish', callback_data=f'topupno:{rid}')]]), protect_content=True)
+    receipt_caption=(f'Hisobni to‘ldirish so‘rovi\n\nIsmi: {m.from_user.full_name}\nUser: {username}\nID: {m.from_user.id}\nSumma: {data["amount"]:,}'.replace(',', ' ')+' so‘m')
+    receipt_kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='Tasdiqlash', callback_data=f'topupok:{rid}'),InlineKeyboardButton(text='Rad etish',callback_data=f'topupno:{rid}')]])
+    recipients={ADMIN_ID,*await db.admins_with_permission('payments')}
+    for admin_id in recipients:
+        try: await bot.send_photo(admin_id,m.photo[-1].file_id,caption=receipt_caption,reply_markup=receipt_kb,protect_content=True)
+        except Exception: pass
     await remove_incoming(m)
     await user_finish(m,state,f'To‘lov chekingiz adminga yuborildi.\nAdmin to‘lovni tasdiqlaganidan so‘ng, {data["amount"]:,}'.replace(',', ' ')+ ' so‘m hisobingizga qo‘shiladi.')
 
 @router.callback_query(F.data == 'vipmenu')
 async def vipmenu(call: types.CallbackQuery, db: Database, state:FSMContext):
+    u=await db.user(call.from_user.id)
+    if not u or u['blocked']: return await call.answer('Botdan foydalanish huquqingiz cheklangan.',show_alert=True)
+    if not await subscribed(call.bot,db,call.from_user.id): await ask_sub(call.message,db); return await call.answer()
     await state.clear()
     rows = []
     for days, label in [(1, '1 kunlik'), (7, '1 haftalik'), (30, '1 oylik')]:
@@ -280,6 +333,9 @@ async def vipmenu(call: types.CallbackQuery, db: Database, state:FSMContext):
 
 @router.callback_query(F.data.startswith('vipbuy:'))
 async def vipbuy(call: types.CallbackQuery, db: Database):
+    u0=await db.user(call.from_user.id)
+    if not u0 or u0['blocked']: return await call.answer('Botdan foydalanish huquqingiz cheklangan.',show_alert=True)
+    if not await subscribed(call.bot,db,call.from_user.id): await ask_sub(call.message,db); return await call.answer()
     days = int(call.data.split(':')[1]); price = int(await db.setting('vip_' + str(days))); u = await db.user(call.from_user.id)
     available = int(u['balance'] or 0) + int(u['referral_balance'] or 0)
     if available < price:
@@ -288,11 +344,17 @@ async def vipbuy(call: types.CallbackQuery, db: Database):
     await call.message.answer(f'Tarif: {label}\nNarxi: {price:,} so‘m\n\nHaqiqatdan ham ushbu VIP obunani sotib olmoqchimisiz?', reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='Ha', callback_data=f'vipconfirm:{days}'), InlineKeyboardButton(text='Yo‘q', callback_data='vipcancel')]])); await call.answer()
 
 @router.callback_query(F.data == 'vipcancel')
-async def vipcancel(c: types.CallbackQuery):
-    await c.message.edit_text('VIP xaridi bekor qilindi.'); await c.answer()
+async def vipcancel(c: types.CallbackQuery,db:Database):
+    rows=[]
+    for days,label in [(1,'1 kunlik'),(7,'1 haftalik'),(30,'1 oylik')]:
+        rows.append([InlineKeyboardButton(text=f'{label} — {int(await db.setting("vip_"+str(days))):,} so‘m',callback_data=f'vipbuy:{days}')])
+    await c.message.edit_text('VIP tarifini tanlang:',reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)); await c.answer()
 
 @router.callback_query(F.data.startswith('vipconfirm:'))
 async def vipconfirm(c: types.CallbackQuery, db: Database):
+    u0=await db.user(c.from_user.id)
+    if not u0 or u0['blocked']: return await c.answer('Botdan foydalanish huquqingiz cheklangan.',show_alert=True)
+    if not await subscribed(c.bot,db,c.from_user.id): await ask_sub(c.message,db); return await c.answer()
     days = int(c.data.split(':')[1]); price = int(await db.setting('vip_' + str(days))); u = await db.user(c.from_user.id)
     if not u: return await c.answer('Foydalanuvchi topilmadi.', show_alert=True)
     expiry = await db.purchase_vip(c.from_user.id,days,price)
@@ -301,13 +363,16 @@ async def vipconfirm(c: types.CallbackQuery, db: Database):
 
 @router.callback_query(F.data == 'referral')
 async def referral(call: types.CallbackQuery, db: Database, state:FSMContext):
+    u0=await db.user(call.from_user.id)
+    if not u0 or u0['blocked']: return await call.answer('Botdan foydalanish huquqingiz cheklangan.',show_alert=True)
+    if not await subscribed(call.bot,db,call.from_user.id): return await call.answer('Avval majburiy kanallarga obuna bo‘ling.',show_alert=True)
     await state.clear()
     u = await db.user(call.from_user.id)
     if not u['rules_accepted']:
-        await call.message.answer(REF_INTRO.replace('500', str(await db.setting('referral_bonus') or 500)), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='Qoidalar', callback_data='ref_rules')]]))
+        await call.message.answer(REF_INTRO, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='Qoidalar', callback_data='ref_rules')]]))
     else:
         link = await referral_link(call.from_user.id, call.bot)
-        await call.message.answer(f'Sizning shaxsiy referal havolangiz:\n{link}\n\nUshbu havolani ishonchli do‘stlaringizga yuboring. Ular havola orqali botga kirib start bossa, hisobingizga {await db.setting("referral_bonus")} so‘m qo‘shiladi.')
+        await call.message.answer(f'Sizning shaxsiy referal havolangiz:\n{link}\n\nUshbu havolani ishonchli do‘stlaringizga yuboring. Ular havola orqali botga kirib start bossa, hisobingizga {await db.setting("referral_bonus")} so‘m qo‘shiladi.', reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='Havolani nusxalash', copy_text=types.CopyTextButton(text=link))]]))
     await call.answer()
 
 @router.callback_query(F.data == 'ref_rules')
@@ -318,12 +383,17 @@ async def ref_rules(c: types.CallbackQuery):
 async def refaccept(c: types.CallbackQuery, db: Database):
     await db.conn.execute('UPDATE users SET rules_accepted=1 WHERE user_id=?', (c.from_user.id,)); await db.conn.commit()
     link = await referral_link(c.from_user.id, c.bot)
-    await c.message.answer(f'Sizning shaxsiy referal havolangiz:\n{link}\n\nUshbu havolani ishonchli do‘stlaringizga yuboring. Ular havola orqali botga kirib start bossa, hisobingizga {await db.setting("referral_bonus")} so‘m qo‘shiladi.')
+    try: await c.message.delete()
+    except Exception: pass
+    await c.message.answer(f'Sizning shaxsiy referal havolangiz:\n{link}\n\nUshbu havolani ishonchli do‘stlaringizga yuboring. Ular havola orqali botga kirib start bossa, hisobingizga {await db.setting("referral_bonus")} so‘m qo‘shiladi.', reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='Havolani nusxalash', copy_text=types.CopyTextButton(text=link))]]))
     await c.answer()
 
 @router.callback_query(F.data == 'refdecline')
-async def refdecline(c: types.CallbackQuery):
-    await c.answer('Referal havolasi berilmadi.')
+async def refdecline(c: types.CallbackQuery,db:Database,state:FSMContext):
+    try: await c.message.delete()
+    except Exception: pass
+    await send_cabinet(c.message,c.from_user.id,db)
+    await c.answer()
 
 @router.callback_query(F.data.startswith('claimgift:'))
 async def claim_gift(c: types.CallbackQuery, db: Database):
@@ -343,6 +413,9 @@ async def claim_gift(c: types.CallbackQuery, db: Database):
 
 @router.message(F.text == 'Bot haqida')
 async def about(m: types.Message, db: Database, state:FSMContext):
+    u0=await db.user(m.from_user.id)
+    if u0 and u0['blocked']: return await m.answer('Siz botdan butunlay blocklandingiz. Sababini bilmoqchi bo‘lsangiz Yordam bo‘limidan adminga murojaat qiling.',reply_markup=blocked_menu())
+    if not await subscribed(m.bot,db,m.from_user.id): return await ask_sub(m,db)
     await state.clear()
     kind = await db.setting('info_type'); file_id = await db.setting('info_file_id'); caption = await db.setting('info_caption')
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='Kanalimiz', url='https://t.me/Bangbros_studio')]])
@@ -354,6 +427,8 @@ async def about(m: types.Message, db: Database, state:FSMContext):
 
 @router.message(F.text == 'Yordam')
 async def help_(m: types.Message, db: Database, state:FSMContext):
+    u0=await db.user(m.from_user.id)
+    if not (u0 and u0['blocked']) and not await subscribed(m.bot,db,m.from_user.id): return await ask_sub(m,db)
     await state.clear()
     url = (await db.setting('admin_link') or '').strip()
     text = 'Agar sizda muammolar yoki qanaqadur savollar paydo bo‘lgan bo‘lsa admin bilan bog‘lanishingiz mumkin'
