@@ -69,7 +69,6 @@ async def interrupt_admin_action(m:types.Message,state:FSMContext,db:Database):
 @router.message(Command('data'))
 async def data_cmd(m:types.Message,db:Database):
     if m.from_user.id!=ADMIN_ID: return
-    # Use SQLite's online backup API so the exported file is a consistent latest snapshot.
     fd,path=tempfile.mkstemp(prefix='bangbros_backup_',suffix='.db'); os.close(fd)
     import aiosqlite
     async with aiosqlite.connect(path) as dst: await db.conn.backup(dst)
@@ -223,7 +222,6 @@ async def delete_link(m:types.Message,state:FSMContext,db:Database,bot:Bot):
     match=re.search(r'start=video_(\d+)',text)
     vid=int(match.group(1)) if match else None
     if vid is None:
-        # Telegram channel post URL ends with its message ID, not the bot's video ID.
         post_match=re.search(r't\.me/(?:c/\d+|[A-Za-z0-9_]+)/([0-9]+)',text)
         if post_match:
             post_id=int(post_match.group(1))
@@ -239,7 +237,7 @@ async def delete_link(m:types.Message,state:FSMContext,db:Database,bot:Bot):
     try: await bot.delete_message(v['channel_id'],v['channel_message_id'])
     except Exception: pass
     await db.delete_video(vid); await delete_user_input(m); await finish_prompt(m,state,'Video o‘chirildi.')
-# Settings: retain prior behavior for edit forms, but use Bang Bros labels.
+
 @router.message(F.text=='Karta edit')
 async def card_edit(m:types.Message,state:FSMContext,db:Database):
     if await has_permission(db,m.from_user.id,'edit'):
@@ -335,7 +333,6 @@ async def del_channel_no(c:types.CallbackQuery):
     await c.message.answer('Kanallar bo‘limidasiz.',reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='Majburiy kanal qo‘shish',callback_data='add_mand')],[InlineKeyboardButton(text='Maxsus kanal qo‘shish',callback_data='add_special')],[InlineKeyboardButton(text='Kanal o‘chirish',callback_data='del_channel')]]))
     await c.answer()
 
-# --- To'lovlarni tasdiqlash ---
 @router.callback_query(F.data.startswith('topupok:'))
 async def topup_approve(c:types.CallbackQuery,state:FSMContext,db:Database,bot:Bot):
     if not await has_permission(db,c.from_user.id,'payments'): return await c.answer('Afsuski sizni adminlik huquqlaringiz bulardan foydalanishga yetmaydi.\nKerakli huquq: Chek tasdiqlash',show_alert=True)
@@ -372,7 +369,6 @@ async def topup_reject_reason(m:types.Message,state:FSMContext,db:Database,bot:B
     await m.answer('To‘lov rad qilindi.\nSababi foydalanuvchiga yetkazildi.')
     await state.clear()
 
-# --- VIP tariflarini tahrirlash ---
 @router.message(F.text=='VIP edit')
 async def vip_edit_full(m:types.Message,db:Database):
     if not await has_permission(db,m.from_user.id,'edit'): return await m.answer('Afsuski sizni adminlik huquqlaringiz bulardan foydalanishga yetmaydi.\nKerakli huquq: Edit imkoniyatlari')
@@ -389,7 +385,6 @@ async def vipprice_save(m:types.Message,state:FSMContext,db:Database):
     except: return await m.answer('Narxni musbat raqam bilan yuboring.')
     d=(await state.get_data())['vip_days']; await db.set_setting('vip_'+str(d),n); await delete_user_input(m); await finish_prompt(m,state,'VIP tarifi yangilandi.')
 
-# --- Foydalanuvchilarni boshqarish ---
 @router.message(F.text=='Foydalanuvchilar')
 async def users_menu(m:types.Message,state:FSMContext,db:Database):
     await state.clear()
@@ -420,7 +415,20 @@ async def show_user(target,db,u,edit=False,actor_id=None,prompt_data=None):
         except Exception: pass
         extra=f'Holati: {status}\nMuddati: {expiry}'
     else: extra='Holati: Oddiy obunachi'
-    text=(f'Foydalanuvchi ma’lumotlari\n\nIsm: {u["name"] or "Mavjud emas"}\nUsername: {('@'+u['username']) if u['username'] else 'Mavjud emas'}\nID: {uid}\nBalans: {int(u["balance"] or 0)+int(u["referral_balance"] or 0):,} so‘m\n{extra}\nDo‘stlar: {friends}\nBloklangan: {"Ha" if u["blocked"] else "Yo‘q"}')
+    
+    # Xatolik to'g'rilangan qism:
+    username_val = f"@{u['username']}" if u['username'] else 'Mavjud emas'
+    text = (
+        f"Foydalanuvchi ma’lumotlari\n\n"
+        f"Ism: {u['name'] or 'Mavjud emas'}\n"
+        f"Username: {username_val}\n"
+        f"ID: {uid}\n"
+        f"Balans: {int(u['balance'] or 0)+int(u['referral_balance'] or 0):,} so‘m\n"
+        f"{extra}\n"
+        f"Do‘stlar: {friends}\n"
+        f"Bloklangan: {'Ha' if u['blocked'] else 'Yo‘q'}"
+    )
+    
     rows=[[InlineKeyboardButton(text='Balans qo‘shish',callback_data=f'uadd:{uid}'),InlineKeyboardButton(text='Balans ayirish',callback_data=f'usub:{uid}')]]
     if vip: rows.append([InlineKeyboardButton(text='VIP bekor qilish',callback_data=f'urevoke:{uid}')])
     elif not is_admin: rows.append([InlineKeyboardButton(text='VIP berish',callback_data=f'uvip:{uid}')])
@@ -532,7 +540,6 @@ async def show_admin_permissions(target,uid,selected,edit=False):
         rows.append([InlineKeyboardButton(text=f'{mark} {label}',callback_data=f'uperm:{uid}:{key}')])
     rows.append([InlineKeyboardButton(text='Bo‘ldi',callback_data=f'upermdone:{uid}')])
     kb=InlineKeyboardMarkup(inline_keyboard=rows); text='Admin imkoniyatlarini belgilang:'
-    # The permission selector replaces the existing user profile message.
     try:
         await target.edit_text(text,reply_markup=kb)
     except Exception:
@@ -590,7 +597,6 @@ async def remove_admin_confirm(c:types.CallbackQuery,db:Database):
     except Exception: pass
     await c.message.edit_text('Adminlik bekor qilindi. Foydalanuvchi oddiy foydalanuvchi holatiga qaytarildi.'); await c.answer()
 
-# --- Reklama yaratish va tarqatish ---
 def parse_ad_buttons(raw):
     rows=[]
     for line in raw.splitlines():
@@ -660,7 +666,6 @@ async def broadcast_content(m:types.Message,state:FSMContext):
     await delete_user_input(m)
     await state.update_data(source_chat=m.chat.id,source_message=preview.message_id,url_buttons=[],like_rows=[],like_options=[])
     await state.set_state(Broadcast.content)
-    # A separate controller message is edited throughout the setup.
     await edit_or_send_prompt(m,state,'Reklama ko‘rinishi tayyor. Kerakli tugmalarni qo‘shing yoki reklama tayyor tugmasini bosing.',InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text='Tugmalar qo‘shish',callback_data='bcurls:add')],
         [InlineKeyboardButton(text='Like tugmalar qo‘shish',callback_data='bclike:add')],
@@ -760,7 +765,6 @@ async def broadcast_send(c:types.CallbackQuery,state:FSMContext,db:Database,bot:
     await finish_prompt(c.message,state,f'Reklama tarqatish yakunlandi.\nJami: {len(ids)}\nYuborildi: {ok}\nYuborilmadi: {bad}')
     await c.answer()
 
-# --- Gift tarqatish ---
 @router.message(F.text=='Gift o‘tkazish')
 async def gift_start(m:types.Message,state:FSMContext,db:Database):
     if m.from_user.id==ADMIN_ID or await db.is_admin(m.from_user.id):
@@ -802,8 +806,6 @@ async def gift_confirm(c:types.CallbackQuery,state:FSMContext,db:Database,bot:Bo
         try: await bot.send_message(uid,body,reply_markup=kb); ok+=1
         except: pass
     await finish_prompt(c.message,state,f'Gift e’lon qilindi. Yetkazildi: {ok} ta foydalanuvchi.'); await c.answer()
-
-# Non-admin callback for claiming gift is handled by public router registered in main.
 
 @router.callback_query(F.data.startswith('uid:'))
 async def id_user_profile(c:types.CallbackQuery,db:Database):
