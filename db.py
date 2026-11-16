@@ -14,7 +14,7 @@ class Database:
         CREATE TABLE IF NOT EXISTS qualities(id INTEGER PRIMARY KEY AUTOINCREMENT,video_id INTEGER,quality TEXT,file_id TEXT,UNIQUE(video_id,quality),FOREIGN KEY(video_id) REFERENCES videos(id) ON DELETE CASCADE);
         CREATE TABLE IF NOT EXISTS views(user_id INTEGER,video_id INTEGER,PRIMARY KEY(user_id,video_id));
         CREATE TABLE IF NOT EXISTS votes(user_id INTEGER,video_id INTEGER,vote INTEGER,PRIMARY KEY(user_id,video_id));
-        CREATE TABLE IF NOT EXISTS channels(channel_id INTEGER PRIMARY KEY,kind TEXT NOT NULL,join_url TEXT);
+        CREATE TABLE IF NOT EXISTS channels(channel_id INTEGER PRIMARY KEY,kind TEXT NOT NULL,join_url TEXT,title TEXT);
         CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT);
         CREATE TABLE IF NOT EXISTS topups(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER,amount INTEGER,receipt_id TEXT,status TEXT DEFAULT 'pending',rejection_reason TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS transactions(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER,amount INTEGER,kind TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
@@ -24,12 +24,15 @@ class Database:
         CREATE TABLE IF NOT EXISTS gifts(id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT,amount INTEGER DEFAULT 0,days INTEGER DEFAULT 0,winners_limit INTEGER,claimed INTEGER DEFAULT 0,active INTEGER DEFAULT 1,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS gift_claims(gift_id INTEGER,user_id INTEGER,created_at TEXT DEFAULT CURRENT_TIMESTAMP,PRIMARY KEY(gift_id,user_id));
         CREATE TABLE IF NOT EXISTS broadcasts(id INTEGER PRIMARY KEY AUTOINCREMENT,chat_id INTEGER,message_id INTEGER,media_type TEXT,caption TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE IF NOT EXISTS ad_campaigns(id INTEGER PRIMARY KEY AUTOINCREMENT,source_chat INTEGER,source_message INTEGER,url_buttons TEXT,like_options TEXT,like_layout TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE IF NOT EXISTS ad_votes(campaign_id INTEGER,user_id INTEGER,option_index INTEGER,PRIMARY KEY(campaign_id,user_id));
         ''')
         # Safe migrations for databases created by earlier bot versions.
         for table, column, definition in [
             ('users','referral_balance','INTEGER DEFAULT 0'),
             ('topups','rejection_reason','TEXT'),
             ('admins','permissions',"TEXT DEFAULT '[]'"),
+            ('channels','title','TEXT'),
         ]:
             cur=await self.conn.execute(f'PRAGMA table_info({table})')
             cols={r['name'] for r in await cur.fetchall()}
@@ -102,7 +105,7 @@ class Database:
         c=await self.conn.execute("SELECT * FROM channels WHERE kind='mandatory'"); return await c.fetchall()
     async def all_channels(self):
         c=await self.conn.execute('SELECT * FROM channels ORDER BY kind,channel_id'); return await c.fetchall()
-    async def add_channel(self,cid,kind,url=None): await self.conn.execute('INSERT OR REPLACE INTO channels VALUES(?,?,?)',(cid,kind,url)); await self.conn.commit()
+    async def add_channel(self,cid,kind,url=None,title=None): await self.conn.execute('INSERT OR REPLACE INTO channels(channel_id,kind,join_url,title) VALUES(?,?,?,?)',(cid,kind,url,title)); await self.conn.commit()
     async def delete_channel(self,cid): await self.conn.execute('DELETE FROM channels WHERE channel_id=?',(cid,)); await self.conn.commit()
     async def add_join_request(self,u,c): await self.conn.execute('INSERT OR IGNORE INTO join_requests(user_id,channel_id) VALUES(?,?)',(u,c)); await self.conn.commit()
     async def has_join_request(self,u,c):
@@ -176,6 +179,15 @@ class Database:
         import json
         try: return json.loads(r['permissions'] or '[]')
         except Exception: return []
+    async def admins_with_permission(self, permission):
+        import json
+        c=await self.conn.execute('SELECT user_id,permissions FROM admins')
+        rows=await c.fetchall(); out=[]
+        for r in rows:
+            try: perms=json.loads(r['permissions'] or '[]')
+            except Exception: perms=[]
+            if permission in perms: out.append(r['user_id'])
+        return out
     async def is_admin(self, uid):
         return await self.admin_permissions(uid) is not None
     async def set_admin(self, uid, permissions):
@@ -218,6 +230,16 @@ class Database:
         await self.conn.commit(); return 'won',g
     async def gift_winners(self,gid):
         c=await self.conn.execute('SELECT u.user_id,u.name,u.username FROM gift_claims g JOIN users u ON u.user_id=g.user_id WHERE g.gift_id=? ORDER BY g.created_at',(gid,)); return await c.fetchall()
+    async def create_ad_campaign(self,source_chat,source_message,url_buttons,like_options,like_layout):
+        import json
+        c=await self.conn.execute('INSERT INTO ad_campaigns(source_chat,source_message,url_buttons,like_options,like_layout) VALUES(?,?,?,?,?)',(source_chat,source_message,json.dumps(url_buttons,ensure_ascii=False),json.dumps(like_options,ensure_ascii=False),json.dumps(like_layout,ensure_ascii=False)))
+        await self.conn.commit(); return c.lastrowid
+    async def ad_campaign(self,campaign_id):
+        c=await self.conn.execute('SELECT * FROM ad_campaigns WHERE id=?',(campaign_id,)); return await c.fetchone()
+    async def ad_vote(self,campaign_id,user_id,option_index):
+        await self.conn.execute('INSERT INTO ad_votes(campaign_id,user_id,option_index) VALUES(?,?,?) ON CONFLICT(campaign_id,user_id) DO UPDATE SET option_index=excluded.option_index',(campaign_id,user_id,option_index)); await self.conn.commit()
+    async def ad_vote_counts(self,campaign_id):
+        c=await self.conn.execute('SELECT option_index,COUNT(*) n FROM ad_votes WHERE campaign_id=? GROUP BY option_index',(campaign_id,)); return {r['option_index']:r['n'] for r in await c.fetchall()}
     async def all_user_ids(self,mode='all'):
         q='SELECT user_id FROM users WHERE blocked=0'; args=()
         if mode=='vip': q+=' AND vip_until>?'; args=(datetime.datetime.now().isoformat(),)

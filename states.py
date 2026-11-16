@@ -8,6 +8,6 @@ class Settings(StatesGroup):
     card=State(); vip_price=State(); info=State(); referral=State(); admin_link=State()
     mandatory_channel=State(); special_channel=State(); info_caption=State()
 class UserAdmin(StatesGroup):
-    user_id=State(); add_amount=State(); subtract_amount=State(); message=State(); admin_permissions=State(); reject_reason=State()
-class Broadcast(StatesGroup): content=State(); button_name=State(); button_url=State(); audience=State()
+    user_id=State(); add_amount=State(); subtract_amount=State(); message=State(); admin_permissions=State(); reject_reason=State(); confirm_balance=State()
+class Broadcast(StatesGroup): content=State(); button_name=State(); button_url=State(); audience=State(); like_layout=State()
 class Gift(StatesGroup): gift_type=State(); tariff=State(); amount=State(); winners=State(); confirm=State()
