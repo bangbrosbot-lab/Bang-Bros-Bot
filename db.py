@@ -9,23 +9,33 @@ class Database:
         await self.conn.execute('PRAGMA foreign_keys=ON')
         await self.conn.execute('PRAGMA journal_mode=WAL')
         await self.conn.executescript('''
-        CREATE TABLE IF NOT EXISTS users(user_id INTEGER PRIMARY KEY,name TEXT,username TEXT,balance INTEGER DEFAULT 0,vip_until TEXT,referred_by INTEGER,rules_accepted INTEGER DEFAULT 0,blocked INTEGER DEFAULT 0,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE IF NOT EXISTS users(user_id INTEGER PRIMARY KEY,name TEXT,username TEXT,balance INTEGER DEFAULT 0,referral_balance INTEGER DEFAULT 0,vip_until TEXT,referred_by INTEGER,rules_accepted INTEGER DEFAULT 0,blocked INTEGER DEFAULT 0,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS videos(id INTEGER PRIMARY KEY AUTOINCREMENT,cover_id TEXT,caption TEXT,teaser_id TEXT,channel_message_id INTEGER,channel_id INTEGER,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS qualities(id INTEGER PRIMARY KEY AUTOINCREMENT,video_id INTEGER,quality TEXT,file_id TEXT,UNIQUE(video_id,quality),FOREIGN KEY(video_id) REFERENCES videos(id) ON DELETE CASCADE);
         CREATE TABLE IF NOT EXISTS views(user_id INTEGER,video_id INTEGER,PRIMARY KEY(user_id,video_id));
         CREATE TABLE IF NOT EXISTS votes(user_id INTEGER,video_id INTEGER,vote INTEGER,PRIMARY KEY(user_id,video_id));
         CREATE TABLE IF NOT EXISTS channels(channel_id INTEGER PRIMARY KEY,kind TEXT NOT NULL,join_url TEXT);
         CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT);
-        CREATE TABLE IF NOT EXISTS topups(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER,amount INTEGER,receipt_id TEXT,status TEXT DEFAULT 'pending',created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE IF NOT EXISTS topups(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER,amount INTEGER,receipt_id TEXT,status TEXT DEFAULT 'pending',rejection_reason TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS transactions(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER,amount INTEGER,kind TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS referrals(user_id INTEGER PRIMARY KEY,referrer_id INTEGER,bonus INTEGER DEFAULT 0,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
-        CREATE TABLE IF NOT EXISTS admins(user_id INTEGER PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS admins(user_id INTEGER PRIMARY KEY,permissions TEXT DEFAULT '[]');
         CREATE TABLE IF NOT EXISTS join_requests(user_id INTEGER,channel_id INTEGER,created_at TEXT DEFAULT CURRENT_TIMESTAMP,PRIMARY KEY(user_id,channel_id));
         CREATE TABLE IF NOT EXISTS gifts(id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT,amount INTEGER DEFAULT 0,days INTEGER DEFAULT 0,winners_limit INTEGER,claimed INTEGER DEFAULT 0,active INTEGER DEFAULT 1,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS gift_claims(gift_id INTEGER,user_id INTEGER,created_at TEXT DEFAULT CURRENT_TIMESTAMP,PRIMARY KEY(gift_id,user_id));
         CREATE TABLE IF NOT EXISTS broadcasts(id INTEGER PRIMARY KEY AUTOINCREMENT,chat_id INTEGER,message_id INTEGER,media_type TEXT,caption TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
         ''')
-        defaults={'card':'8600 0000 0000 0000','vip_1':'10000','vip_7':'20000','vip_30':'30000','bot_info':'Bang Bros — videolarni tomosha qilish platformasi.','admin_link':'@admin','referral_bonus':'500'}
+        # Safe migrations for databases created by earlier bot versions.
+        for table, column, definition in [
+            ('users','referral_balance','INTEGER DEFAULT 0'),
+            ('topups','rejection_reason','TEXT'),
+            ('admins','permissions',"TEXT DEFAULT '[]'"),
+        ]:
+            cur=await self.conn.execute(f'PRAGMA table_info({table})')
+            cols={r['name'] for r in await cur.fetchall()}
+            if column not in cols:
+                await self.conn.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
+        defaults={'card':'8600 0000 0000 0000','vip_1':'10000','vip_7':'20000','vip_30':'30000','bot_info':'','info_type':'text','info_file_id':'','info_caption':'','admin_link':'@admin','referral_bonus':'500'}
         for k,v in defaults.items(): await self.conn.execute('INSERT OR IGNORE INTO settings VALUES(?,?)',(k,v))
         await self.conn.commit()
     async def close(self):
@@ -54,6 +64,27 @@ class Database:
         base=until if until and until>now else now; expiry=base+datetime.timedelta(days=days)
         await self.conn.execute('UPDATE users SET vip_until=? WHERE user_id=?',(expiry.isoformat(),u)); await self.conn.commit(); return expiry
     async def revoke_vip(self,u): await self.conn.execute('UPDATE users SET vip_until=NULL WHERE user_id=?',(u,)); await self.conn.commit()
+    async def purchase_vip(self, uid, days, price):
+        await self.conn.execute('BEGIN IMMEDIATE')
+        try:
+            c=await self.conn.execute('SELECT balance,referral_balance,vip_until FROM users WHERE user_id=?',(uid,)); u=await c.fetchone()
+            if not u:
+                await self.conn.rollback(); return None
+            normal=int(u['balance'] or 0); referral=int(u['referral_balance'] or 0)
+            if normal+referral < price:
+                await self.conn.rollback(); return None
+            use_ref=min(referral,price); use_normal=price-use_ref
+            now=datetime.datetime.now(); until=None
+            if u['vip_until']:
+                try: until=datetime.datetime.fromisoformat(u['vip_until'])
+                except Exception: pass
+            base=until if until and until>now else now
+            expiry=base+datetime.timedelta(days=days)
+            await self.conn.execute('UPDATE users SET balance=balance-?,referral_balance=referral_balance-?,vip_until=? WHERE user_id=?',(use_normal,use_ref,expiry.isoformat(),uid))
+            await self.conn.execute('INSERT INTO transactions(user_id,amount,kind) VALUES(?,?,?)',(uid,-price,'vip_purchase'))
+            await self.conn.commit(); return expiry
+        except Exception:
+            await self.conn.rollback(); raise
     async def count_view(self,u,v):
         c=await self.conn.execute('INSERT OR IGNORE INTO views VALUES(?,?)',(u,v)); await self.conn.commit(); return c.rowcount==1
     async def view_count(self,v):
@@ -91,22 +122,85 @@ class Database:
     async def pending_topup(self,rid):
         c=await self.conn.execute("SELECT * FROM topups WHERE id=? AND status='pending'",(rid,)); return await c.fetchone()
     async def approve_topup(self,rid):
-        r=await self.pending_topup(rid)
-        if not r: return None
-        await self.conn.execute("UPDATE topups SET status='approved' WHERE id=?",(rid,)); await self.conn.execute('UPDATE users SET balance=balance+? WHERE user_id=?',(r['amount'],r['user_id'])); await self.conn.execute('INSERT INTO transactions(user_id,amount,kind) VALUES(?,?,?)',(r['user_id'],r['amount'],'topup')); await self.conn.commit(); return r
+        await self.conn.execute('BEGIN IMMEDIATE')
+        try:
+            c=await self.conn.execute("SELECT * FROM topups WHERE id=? AND status='pending'",(rid,)); r=await c.fetchone()
+            if not r:
+                await self.conn.rollback(); return None
+            cur=await self.conn.execute("UPDATE topups SET status='approved' WHERE id=? AND status='pending'",(rid,))
+            if cur.rowcount != 1:
+                await self.conn.rollback(); return None
+            await self.conn.execute('UPDATE users SET balance=balance+? WHERE user_id=?',(r['amount'],r['user_id']))
+            await self.conn.execute('INSERT INTO transactions(user_id,amount,kind) VALUES(?,?,?)',(r['user_id'],r['amount'],'topup'))
+            await self.conn.commit(); return r
+        except Exception:
+            await self.conn.rollback(); raise
     async def reject_topup(self,rid):
-        r=await self.pending_topup(rid)
-        if r: await self.conn.execute("UPDATE topups SET status='rejected' WHERE id=?",(rid,)); await self.conn.commit()
-        return r
+        await self.conn.execute('BEGIN IMMEDIATE')
+        try:
+            c=await self.conn.execute("SELECT * FROM topups WHERE id=? AND status='pending'",(rid,)); r=await c.fetchone()
+            if not r:
+                await self.conn.rollback(); return None
+            cur=await self.conn.execute("UPDATE topups SET status='rejected' WHERE id=? AND status='pending'",(rid,))
+            if cur.rowcount != 1:
+                await self.conn.rollback(); return None
+            await self.conn.commit(); return r
+        except Exception:
+            await self.conn.rollback(); raise
     async def referrals_count(self,u):
         c=await self.conn.execute('SELECT COUNT(*) n FROM referrals WHERE referrer_id=?',(u,)); return (await c.fetchone())['n']
     async def credit_referral(self,new_user,referrer,bonus):
         if not referrer or referrer==new_user: return False
-        c=await self.conn.execute('SELECT 1 FROM referrals WHERE user_id=?',(new_user,))
-        if await c.fetchone(): return False
-        r=await self.user(referrer)
-        if not r or r['blocked'] or not r['rules_accepted']: return False
-        await self.conn.execute('INSERT INTO referrals(user_id,referrer_id,bonus) VALUES(?,?,?)',(new_user,referrer,bonus)); await self.conn.execute('UPDATE users SET balance=balance+? WHERE user_id=?',(bonus,referrer)); await self.conn.execute('INSERT INTO transactions(user_id,amount,kind) VALUES(?,?,?)',(referrer,bonus,'referral')); await self.conn.commit(); return True
+        await self.conn.execute('BEGIN IMMEDIATE')
+        try:
+            c=await self.conn.execute('SELECT 1 FROM referrals WHERE user_id=?',(new_user,))
+            if await c.fetchone():
+                await self.conn.rollback(); return False
+            r=await self.user(referrer)
+            if not r or r['blocked'] or not r['rules_accepted']:
+                await self.conn.rollback(); return False
+            await self.conn.execute('INSERT INTO referrals(user_id,referrer_id,bonus) VALUES(?,?,?)',(new_user,referrer,bonus))
+            await self.conn.execute('UPDATE users SET referral_balance=COALESCE(referral_balance,0)+? WHERE user_id=?',(bonus,referrer))
+            await self.conn.execute('INSERT INTO transactions(user_id,amount,kind) VALUES(?,?,?)',(referrer,bonus,'referral'))
+            await self.conn.commit(); return True
+        except Exception:
+            await self.conn.rollback()
+            return False
+    async def vote_counts(self, video_id):
+        c=await self.conn.execute('SELECT SUM(CASE WHEN vote=1 THEN 1 ELSE 0 END) likes,SUM(CASE WHEN vote=-1 THEN 1 ELSE 0 END) dislikes FROM votes WHERE video_id=?',(video_id,))
+        r=await c.fetchone(); return int(r['likes'] or 0),int(r['dislikes'] or 0)
+    async def admin_permissions(self, uid):
+        if uid == 0: return []
+        c=await self.conn.execute('SELECT permissions FROM admins WHERE user_id=?',(uid,)); r=await c.fetchone()
+        if not r: return None
+        import json
+        try: return json.loads(r['permissions'] or '[]')
+        except Exception: return []
+    async def is_admin(self, uid):
+        return await self.admin_permissions(uid) is not None
+    async def set_admin(self, uid, permissions):
+        import json
+        await self.conn.execute('INSERT INTO admins(user_id,permissions) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET permissions=excluded.permissions',(uid,json.dumps(permissions,ensure_ascii=False)))
+        await self.conn.commit()
+    async def remove_admin(self, uid):
+        await self.conn.execute('DELETE FROM admins WHERE user_id=?',(uid,)); await self.conn.commit()
+    async def set_user_block(self, uid, blocked):
+        await self.conn.execute('UPDATE users SET blocked=? WHERE user_id=?',(int(bool(blocked)),uid)); await self.conn.commit()
+    async def adjust_balance(self, uid, amount, kind='admin_adjust'):
+        await self.conn.execute('UPDATE users SET balance=MAX(0,balance+?) WHERE user_id=?',(amount,uid))
+        await self.conn.execute('INSERT INTO transactions(user_id,amount,kind) VALUES(?,?,?)',(uid,amount,kind)); await self.conn.commit()
+    async def reject_topup_with_reason(self, rid, reason):
+        await self.conn.execute('BEGIN IMMEDIATE')
+        try:
+            c=await self.conn.execute("SELECT * FROM topups WHERE id=? AND status='pending'",(rid,)); r=await c.fetchone()
+            if not r:
+                await self.conn.rollback(); return None
+            cur=await self.conn.execute("UPDATE topups SET status='rejected',rejection_reason=? WHERE id=? AND status='pending'",(reason,rid))
+            if cur.rowcount != 1:
+                await self.conn.rollback(); return None
+            await self.conn.commit(); return r
+        except Exception:
+            await self.conn.rollback(); raise
     async def create_gift(self,kind,amount,days,limit):
         c=await self.conn.execute('INSERT INTO gifts(kind,amount,days,winners_limit) VALUES(?,?,?,?)',(kind,amount,days,limit)); await self.conn.commit(); return c.lastrowid
     async def claim_gift(self,gid,uid):

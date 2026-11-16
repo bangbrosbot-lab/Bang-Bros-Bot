@@ -3,6 +3,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 def main_menu(): return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text='Kabinet'),KeyboardButton(text='Yordam')],[KeyboardButton(text='Bot haqida')]],resize_keyboard=True)
 def admin_menu(): return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text='Ish stoli'),KeyboardButton(text='Sozlamalar')],[KeyboardButton(text='Statistika')]],resize_keyboard=True)
+def limited_admin_menu(): return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text='Sozlamalar')]],resize_keyboard=True)
 def desk(): return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text='Video qo‘shish'),KeyboardButton(text='Video o‘chirish')],[KeyboardButton(text='Reklama jo‘natish'),KeyboardButton(text='Gift o‘tkazish')],[KeyboardButton(text='Bosh menyu')]],resize_keyboard=True)
 def settings(): return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text='Kanallar'),KeyboardButton(text='Foydalanuvchilar')],[KeyboardButton(text='Karta edit'),KeyboardButton(text='VIP edit'),KeyboardButton(text='Info edit')],[KeyboardButton(text='Referral edit'),KeyboardButton(text='Admin link edit')],[KeyboardButton(text='Bosh menyu')]],resize_keyboard=True)
 def inline(rows): return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=t,callback_data=d)] for t,d in rows])
