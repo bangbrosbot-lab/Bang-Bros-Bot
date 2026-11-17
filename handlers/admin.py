@@ -50,20 +50,20 @@ def admin_level(perms) -> str:
 
 # ===================================================================== MENYU
 async def open_desk(m, state, db):
-    await m.answer("Ish stoli", reply_markup=kb.desk())
+    await m.edit_text("Ish stoli", reply_markup=kb.desk())
 
 
 async def open_settings(m, state, db):
-    await m.answer("Sozlamalar", reply_markup=kb.settings())
+    await m.edit_text("Sozlamalar", reply_markup=kb.settings())
 
 
 async def back_home(m, state, db):
-    await m.answer("Admin panel", reply_markup=kb.admin_menu())
+    await m.edit_text("Admin panel", reply_markup=kb.admin_menu())
 
 
 async def show_stats(m, state, db):
     s = await db.stats()
-    await m.answer(f"Jami Foydalanuvchilar: {s['users']}\nBugun qo‘shilganlar: {s['today']}\n"
+    await m.edit_text(f"Jami Foydalanuvchilar: {s['users']}\nBugun qo‘shilganlar: {s['today']}\n"
                    f"Vip Foydalanuvchilar: {s['vip']}\nReferral orqali kelganlar: {s['ref']}\n"
                    f"Jami tushgan mablag‘: {money(s['money'])} so‘m\nJami qo‘shilgan videolar: {s['videos']}")
 
@@ -74,9 +74,7 @@ def channels_kb():
 
 
 async def open_channels(m, state, db):
-    if m.from_user.id != ADMIN_ID:
-        return await m.answer(DENIED)
-    await m.answer("Kanallar bo‘limidasiz.", reply_markup=channels_kb())
+    await m.edit_text("Kanallar bo‘limidasiz.", reply_markup=channels_kb())
 
 
 async def open_users(m, state, db):
@@ -102,7 +100,7 @@ async def vip_tariff_markup(db):
 async def edit_vip(m, state, db):
     if not await require(m, db, "edit"):
         return
-    await m.answer("O‘zgartirmoqchi bo‘lgan VIP tarifini tanlang:", reply_markup=await vip_tariff_markup(db))
+    await m.edit_text("O‘zgartirmoqchi bo‘lgan VIP tarifini tanlang:", reply_markup=await vip_tariff_markup(db))
 
 
 async def edit_info(m, state, db):
@@ -146,11 +144,28 @@ MENU_ACTIONS = {
 }
 
 
-@menu_router.message(F.text.in_(set(MENU_ACTIONS)))
-async def on_menu(m: types.Message, state: FSMContext, db: Database):
-    """Menyu tugmasi har qanday jarayonni to‘xtatadi va tegishli bo‘limni ochadi."""
+@menu_router.callback_query(F.data.startswith("amenu:"))
+async def on_menu(c: types.CallbackQuery, state: FSMContext, db: Database):
+    """Inline menyu: eski jarayonni to‘xtatib, bitta boshqaruv xabarida yangi bo‘limni ochadi."""
+    if c.from_user.id != ADMIN_ID and not db.is_admin(c.from_user.id):
+        return await c.answer(DENIED, show_alert=True)
+    key = c.data.split(":", 1)[1]
+    actions = {
+        "desk": open_desk, "settings": open_settings, "home": back_home, "stats": show_stats,
+        "channels": open_channels, "users": open_users, "card": edit_card, "vip": edit_vip,
+        "info": edit_info, "referral": edit_referral, "adminlink": edit_admin_link,
+        "addvideo": start_add_video, "delvideo": start_delete_video,
+        "broadcast": ads.start_broadcast, "gift": ads.start_gift,
+    }
+    action = actions.get(key)
+    if not action:
+        return await c.answer()
+    if key == "channels" and c.from_user.id != ADMIN_ID:
+        return await c.answer(DENIED, show_alert=True)
     await state.clear()
-    await MENU_ACTIONS[m.text](m, state, db)
+    await state.update_data(prompt_id=c.message.message_id, prompt_chat_id=c.message.chat.id)
+    await c.answer()
+    await action(c.message, state, db)
 
 
 # ===================================================================== /data, /id
@@ -204,8 +219,7 @@ async def id_page(c: types.CallbackQuery, db: Database):
 async def id_home(c: types.CallbackQuery, db: Database):
     if not await require(c, db, "users", alert=True):
         return
-    await delete_quietly(c.message)
-    await c.message.answer("Admin panel", reply_markup=kb.admin_menu())
+    await c.message.edit_text("Admin panel", reply_markup=kb.admin_menu())
     await c.answer()
 
 
@@ -354,11 +368,7 @@ async def video_save(c: types.CallbackQuery, state: FSMContext, db: Database, bo
         await state.set_state(AddVideo.finish)
         return await c.answer(f"Kanalga post yuborilmadi: {e}", show_alert=True)
     await db.set_channel_message(vid, post.message_id)
-    try:
-        await c.message.edit_text("Video muvaffaqiyatli qo‘shildi.")
-    except Exception:
-        pass
-    await c.message.answer("Ish stoli", reply_markup=kb.desk())
+    await c.message.edit_text("Video muvaffaqiyatli qo‘shildi.", reply_markup=kb.desk())
     await c.answer()
 
 
@@ -789,11 +799,38 @@ async def user_action(c: types.CallbackQuery, state: FSMContext, db: Database):
         verb = "blockdan chiqarmoqchimisiz?" if u["blocked"] else "blocklamoqchimisiz?"
         return await c.message.edit_text(f"Rostdan ham shu foydalanuvchini {verb}",
                                          reply_markup=kb.confirm_kb(f"ublockconfirm:{uid}:yes", f"ublockconfirm:{uid}:no"))
+    if action == "vip":
+        await state.set_state(UserAdmin.add_amount)
+        rows = [(label, f"uvipdays:{uid}:{days}") for days, label in
+                [(1, "1 kunlik VIP"), (7, "1 haftalik VIP"), (30, "1 oylik VIP")]]
+        await show_prompt(c.message, state, "Beriladigan VIP muddatini tanlang:",
+                          kb.rows_kb(rows + [("Orqaga", f"uback:{uid}")]))
+        return await c.answer()
     prompts = {"add": "Qo‘shiladigan summani yuboring:", "sub": "Ayiriladigan summani yuboring:",
-               "vip": "VIP muddati: 1, 7 yoki 30 kun yuboring:", "msg": "Foydalanuvchiga yuboriladigan xabarni jo‘nating:"}
-    await state.set_state(UserAdmin.add_amount if action in ("add", "sub", "vip") else UserAdmin.message)
+               "msg": "Foydalanuvchiga yuboriladigan xabarni jo‘nating:"}
+    await state.set_state(UserAdmin.add_amount if action in ("add", "sub") else UserAdmin.message)
     await show_prompt(c.message, state, prompts[action], kb.back_kb(f"uback:{uid}"))
     await c.answer()
+
+
+@router.callback_query(F.data.startswith("uvipdays:"))
+async def user_vip_days(c: types.CallbackQuery, state: FSMContext, db: Database, bot: Bot):
+    if not await require(c, db, "users", alert=True):
+        return
+    _, raw_uid, raw_days = c.data.split(":")
+    uid, days = int(raw_uid), int(raw_days)
+    if days not in (1, 7, 30):
+        return await c.answer("Noto‘g‘ri tarif.", show_alert=True)
+    u = await db.user(uid)
+    if not u:
+        return await c.answer("Foydalanuvchi topilmadi.", show_alert=True)
+    expiry = await db.set_vip(uid, days)
+    await safe_call(lambda: bot.send_message(
+        uid, f"Sizga {days} kunlik VIP obuna berildi. Amal qilish muddati: {fmt_local(expiry)}"))
+    await state.clear()
+    await c.message.edit_text(f"Foydalanuvchiga {days} kunlik VIP berildi.")
+    await show_user(c.message, db, await db.user(uid), True, c.from_user.id)
+    await c.answer("VIP berildi.")
 
 
 @router.callback_query(F.data.startswith("uback:"))

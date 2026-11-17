@@ -108,7 +108,9 @@ async def deliver_teaser(m, db, vid):
     await m.answer_video(
         v["teaser_id"], caption=v["caption"], protect_content=True,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="To‘liq video", callback_data=f"full:{vid}")]]))
+            InlineKeyboardButton(text="To‘liq video", callback_data=f"full:{vid}"),
+            InlineKeyboardButton(text="Bosh menyu", callback_data="umenu:home"),
+        ]]))
 
 
 def video_kb(vid: int) -> InlineKeyboardMarkup:
@@ -347,7 +349,53 @@ async def send_cabinet(target, uid, db):
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Hisobni to‘ldirish", callback_data="topup")]
             + ([] if is_vip else [InlineKeyboardButton(text="VIP olish", callback_data="vipmenu")]),
-            [InlineKeyboardButton(text="Pul ishlash", callback_data="referral")]]))
+            [InlineKeyboardButton(text="Pul ishlash", callback_data="referral")],
+            [InlineKeyboardButton(text="Bosh menyu", callback_data="umenu:home")]]))
+
+
+@router.callback_query(F.data.startswith("umenu:"))
+async def user_inline_menu(c: types.CallbackQuery, db: Database, bot: Bot, state: FSMContext):
+    if not await guard_call(c, db, bot):
+        return
+    key = c.data.split(":", 1)[1]
+    await state.clear()
+    await c.answer()
+    if key == "home":
+        try:
+            await c.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        return await c.message.answer("Asosiy menyu", reply_markup=main_menu())
+    if key == "cabinet":
+        return await send_cabinet(c.message, c.from_user.id, db)
+    if key == "about":
+        kind, file_id = await db.setting("info_type"), await db.setting("info_file_id")
+        caption = await db.setting("info_caption")
+        markup = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Kanalimiz", url=CHANNEL_URL)],
+            [InlineKeyboardButton(text="Bosh menyu", callback_data="umenu:home")]])
+        if kind == "photo" and file_id:
+            return await c.message.answer_photo(file_id, caption=caption or None, reply_markup=markup, protect_content=True)
+        if kind == "video" and file_id:
+            return await c.message.answer_video(file_id, caption=caption or None, reply_markup=markup, protect_content=True)
+        return await c.message.answer(caption or await db.setting("bot_info") or
+                                       "Bot haqida ma’lumot hozircha kiritilmagan.", reply_markup=markup)
+    if key == "help":
+        u = await db.user(c.from_user.id)
+        if not (u and u["blocked"]) and not await subscribed(bot, db, c.from_user.id):
+            return await ask_sub(c.message, db)
+        url = (await db.setting("admin_link") or "").strip()
+        if url.startswith("@"):
+            url = "https://t.me/" + url[1:]
+        elif url.startswith("t.me/"):
+            url = "https://" + url
+        rows = []
+        if url.startswith(("https://", "http://", "tg://")):
+            rows.append([InlineKeyboardButton(text="Bog‘lanish", url=url)])
+        rows.append([InlineKeyboardButton(text="Bosh menyu", callback_data="umenu:home")])
+        return await c.message.answer(
+            "Agar sizda muammolar yoki qanaqadur savollar paydo bo‘lgan bo‘lsa admin bilan bog‘lanishingiz mumkin",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 # Menyu tugmalari holatdan (state) qat’i nazar ishlaydi — shuning uchun TopUp holatlaridan OLDIN ro‘yxatdan o‘tadi.
@@ -366,7 +414,9 @@ async def about(m: types.Message, db: Database, bot: Bot, state: FSMContext):
     await state.clear()
     kind, file_id = await db.setting("info_type"), await db.setting("info_file_id")
     caption = await db.setting("info_caption")
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Kanalimiz", url=CHANNEL_URL)]])
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Kanalimiz", url=CHANNEL_URL)],
+        [InlineKeyboardButton(text="Bosh menyu", callback_data="umenu:home")]])
     if kind == "photo" and file_id:
         await m.answer_photo(file_id, caption=caption or None, reply_markup=kb, protect_content=True)
     elif kind == "video" and file_id:
@@ -389,7 +439,9 @@ async def help_(m: types.Message, db: Database, bot: Bot, state: FSMContext):
         url = "https://" + url
     kb = None
     if url.startswith(("https://", "http://", "tg://")):
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Bog‘lanish", url=url)]])
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Bog‘lanish", url=url)],
+            [InlineKeyboardButton(text="Bosh menyu", callback_data="umenu:home")]])
     await m.answer("Agar sizda muammolar yoki qanaqadur savollar paydo bo‘lgan bo‘lsa admin bilan bog‘lanishingiz mumkin",
                    reply_markup=kb)
 
