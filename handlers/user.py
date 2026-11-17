@@ -7,22 +7,27 @@ import logging
 from aiogram import Bot, F, Router, types
 from aiogram.filters import CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import (InlineKeyboardButton, InlineKeyboardMarkup,
+                           InputMediaVideo)
 
 from access import (BLOCKED_TEXT, NO_ACCESS, ask_sub, guard_call, guard_message,
                     subscribed)
 from config import ADMIN_ID, CHANNEL_URL, MAX_PENDING_TOPUPS, MAX_TOPUP, MIN_TOPUP
 from db import Database
-from keyboards import admin_menu, blocked_menu, confirm_kb, main_menu, rows_kb
+from keyboards import (admin_menu, back_kb, blocked_menu, confirm_kb, main_menu,
+                       rows_kb)
 from states import TopUp
 from timeutil import fmt_local
 from utils import (delete_quietly, finish_prompt, is_not_modified, money, safe_call,
-                   show_prompt)
+                   show_prompt, username_text)
 
 log = logging.getLogger(__name__)
 router = Router()
 
 TARIFFS = [(1, "1 kunlik"), (7, "1 haftalik"), (30, "1 oylik")]
+
+VIDEO_GONE = "Hozirda ushbu video mavjud emas."
+VIP_REQUIRED = "Videoni tomosha qilish uchun VIP obuna sotib oling!"
 
 REF_INTRO = """Pul ishlash uchun botimizga do'stlaringizni taklif qilishingiz kerak bo'ladi.
 Sizga havola beriladi, shu havolani do'stingizga jo'natasiz, u shu havoladan o'tib botga start bossa sizga pul beriladi.
@@ -87,7 +92,7 @@ async def welcome(m, bot, db, user=None):
 
 
 async def notify_new_user(bot, user, referrer=None):
-    username = f"@{user.username}" if user.username else "Mavjud emas"
+    username = username_text(user.username)
     if referrer:
         text = ("Referral orqali yangi foydalanuvchi\n\n"
                 f"Ismi: {user.full_name}\nUseri: {username}\nIDsi: {user.id}\nTaklif qiluvchi: {referrer}")
@@ -99,22 +104,26 @@ async def notify_new_user(bot, user, referrer=None):
 async def deliver_teaser(m, db, vid):
     v = await db.video(vid)
     if not v:
-        return await m.answer("Video topilmadi.")
+        return await m.answer(VIDEO_GONE)
     await m.answer_video(
         v["teaser_id"], caption=v["caption"], protect_content=True,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="To‘liq video", callback_data=f"full:{vid}")]]))
 
 
+def video_kb(vid: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="Video sifatini almashtirish", callback_data=f"change:{vid}")]])
+
+
+def full_caption(v, quality_name: str, views: int) -> str:
+    return f"{v['caption']}\n\nSifati: {quality_name}\nKo‘rishlar: {views}"
+
+
 async def send_full_video(message, db, v, quality_row, vid):
     views = await db.view_count(vid)
-    await message.answer_video(
-        quality_row["file_id"],
-        caption=f"{v['caption']}\n\nSifati: {quality_row['quality']}\nKo‘rishlar: {views}",
-        protect_content=True,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="Video sifatini almashtirish", callback_data=f"change:{vid}")]]))
-    await message.answer("Asosiy menyu", reply_markup=main_menu())
+    await message.answer_video(quality_row["file_id"], caption=full_caption(v, quality_row["quality"], views),
+                               protect_content=True, reply_markup=video_kb(vid))
 
 
 async def vote_markup(db, vid, bot_username):
@@ -156,11 +165,13 @@ async def start(m: types.Message, command: CommandObject, db: Database, bot: Bot
 
     if not await subscribed(bot, db, uid):
         if video_id is not None:  # obunadan keyin shu videoga qaytamiz
-            await state.update_data(pending_video=video_id)
+            await state.update_data(pending_video=video_id, need_menu=is_new)
         return await ask_sub(m, db)
     if video_id is not None:
         await deliver_teaser(m, db, video_id)
-        return await m.answer("Asosiy menyu", reply_markup=main_menu())
+        if is_new:  # birinchi tanishuv: pastki menyu hali yo‘q — faqat bir marta
+            await m.answer("Asosiy menyu", reply_markup=main_menu())
+        return
     await welcome(m, bot, db)
 
 
@@ -173,11 +184,13 @@ async def check(call: types.CallbackQuery, db: Database, bot: Bot, state: FSMCon
         return await call.answer("Hali barcha kanallarga qo‘shilmadingiz yoki so‘rovingiz qabul qilinmadi.",
                                  show_alert=True)
     await delete_quietly(call.message)
-    pending = (await state.get_data()).get("pending_video")
+    data = await state.get_data()
+    pending = data.get("pending_video")
     if pending is not None:
-        await state.update_data(pending_video=None)
+        await state.update_data(pending_video=None, need_menu=False)
         await deliver_teaser(call.message, db, pending)
-        await call.message.answer("Asosiy menyu", reply_markup=main_menu())
+        if data.get("need_menu"):  # yangi foydalanuvchi: pastki menyu faqat shu bir marta
+            await call.message.answer("Asosiy menyu", reply_markup=main_menu())
     else:
         await welcome(call.message, bot, db, call.from_user)
     await call.answer()
@@ -200,7 +213,7 @@ async def full(call: types.CallbackQuery, db: Database, bot: Bot):
             "To‘liq videolarni tomosha qilish uchun VIP obuna xarid qilishingiz kerak!", show_alert=True)
     v, qs = await db.video(vid), await db.qualities(vid)
     if not v or not qs:
-        return await call.answer("Video yoki uning sifati topilmadi.", show_alert=True)
+        return await call.answer(VIDEO_GONE, show_alert=True)
     await db.count_view(call.from_user.id, vid)
     await send_full_video(call.message, db, v, qs[0], vid)
     await call.answer()
@@ -211,12 +224,24 @@ async def change(call: types.CallbackQuery, db: Database, bot: Bot):
     if not await guard_call(call, db, bot):
         return
     if not await db.vip(call.from_user.id):
-        return await call.answer("VIP obuna talab qilinadi.", show_alert=True)
+        return await call.answer(VIP_REQUIRED, show_alert=True)
     vid = int(call.data.split(":")[1])
     qs = await db.qualities(vid)
-    await delete_quietly(call.message)
-    await call.message.answer("Kerakli sifatni tanlang!",
-                              reply_markup=rows_kb([(r["quality"], f"quality:{vid}:{r['quality']}") for r in qs]))
+    if not await db.video(vid) or not qs:
+        return await call.answer(VIDEO_GONE, show_alert=True)
+    rows = [(r["quality"], f"quality:{vid}:{r['quality']}") for r in qs] + [("Orqaga", f"changeback:{vid}")]
+    await call.message.edit_reply_markup(reply_markup=rows_kb(rows))  # yangi xabar chiqmaydi
+    await call.answer("Kerakli sifatni tanlang!")
+
+
+@router.callback_query(F.data.startswith("changeback:"))
+async def change_back(call: types.CallbackQuery):
+    vid = int(call.data.split(":")[1])
+    try:
+        await call.message.edit_reply_markup(reply_markup=video_kb(vid))
+    except Exception as e:
+        if not is_not_modified(e):
+            raise
     await call.answer()
 
 
@@ -225,15 +250,30 @@ async def quality(call: types.CallbackQuery, db: Database, bot: Bot):
     if not await guard_call(call, db, bot):
         return
     if not await db.vip(call.from_user.id):
-        return await call.answer("VIP obuna talab qilinadi.", show_alert=True)
+        return await call.answer(VIP_REQUIRED, show_alert=True)
     _, raw_vid, q = call.data.split(":", 2)
     vid = int(raw_vid)
-    chosen = next((r for r in await db.qualities(vid) if r["quality"] == q), None)
     v = await db.video(vid)
-    if not chosen or not v:
+    if not v:
+        await call.answer(VIDEO_GONE, show_alert=True)
+        return await delete_quietly(call.message)
+    chosen = next((r for r in await db.qualities(vid) if r["quality"] == q), None)
+    if not chosen:
         return await call.answer("Bu sifat mavjud emas.", show_alert=True)
-    await delete_quietly(call.message)
-    await send_full_video(call.message, db, v, chosen, vid)
+    caption = full_caption(v, chosen["quality"], await db.view_count(vid))
+    try:  # videoni o‘sha xabarning o‘zida almashtiramiz — chat to‘lib ketmaydi
+        await call.message.edit_media(media=InputMediaVideo(media=chosen["file_id"], caption=caption),
+                                      reply_markup=video_kb(vid))
+    except Exception as e:
+        if is_not_modified(e):
+            try:
+                await call.message.edit_reply_markup(reply_markup=video_kb(vid))
+            except Exception:
+                pass
+        else:  # zaxira yo‘l: eski usul (o‘chirib, yangisini yuborish)
+            log.warning("edit_media ishlamadi (%s), zaxira usul", e)
+            await delete_quietly(call.message)
+            await send_full_video(call.message, db, v, chosen, vid)
     await call.answer()
 
 
@@ -245,10 +285,12 @@ async def vote(call: types.CallbackQuery, db: Database, bot: Bot):
     try:
         _, raw_vid, raw_vote = call.data.split(":")
         vid, value = int(raw_vid), int(raw_vote)
-        if value not in (1, -1) or not await db.video(vid):
+        if value not in (1, -1):
             raise ValueError
     except ValueError:
         return await call.answer("Ovoz qabul qilinmadi.", show_alert=True)
+    if not await db.video(vid):
+        return await call.answer(VIDEO_GONE, show_alert=True)
     await db.vote(call.from_user.id, vid, value)
     try:
         me = await bot.me()
@@ -295,15 +337,16 @@ async def send_cabinet(target, uid, db):
     u = await db.user(uid)
     if not u:
         return await target.answer("Avval /start buyrug‘ini bosing.")
-    status = "VIP obunachi" if await db.vip(uid) else "Oddiy obunachi"
+    is_vip = await db.vip(uid)
+    status = f"VIP obunachi\nVIP muddati: {fmt_local(u['vip_until'])}" if is_vip else "Oddiy obunachi"
     total = int(u["balance"] or 0) + int(u["referral_balance"] or 0)
     friends = await db.referrals_count(uid)
     return await target.answer(
-        f"Ism: {u['name']}\nUser: @{u['username'] or 'mavjud emas'}\nID: {u['user_id']}\n"
+        f"Ism: {u['name']}\nUser: {username_text(u['username'])}\nID: {u['user_id']}\n"
         f"Balans: {money(total)} so‘m\nHolati: {status}\nDo‘stlar: {friends}",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Hisobni to‘ldirish", callback_data="topup"),
-             InlineKeyboardButton(text="VIP olish", callback_data="vipmenu")],
+            [InlineKeyboardButton(text="Hisobni to‘ldirish", callback_data="topup")]
+            + ([] if is_vip else [InlineKeyboardButton(text="VIP olish", callback_data="vipmenu")]),
             [InlineKeyboardButton(text="Pul ishlash", callback_data="referral")]]))
 
 
@@ -358,7 +401,15 @@ async def topup(call: types.CallbackQuery, state: FSMContext, db: Database, bot:
         return
     await state.clear()
     await state.set_state(TopUp.amount)
-    await show_prompt(call.message, state, "To‘ldirmoqchi bo‘lgan summangizni yozing! Masalan: 10000")
+    await show_prompt(call.message, state, "To‘ldirmoqchi bo‘lgan summangizni yozing! Masalan: 10000",
+                      back_kb("topupback"))
+    await call.answer()
+
+
+@router.callback_query(F.data == "topupback")
+async def topup_back(call: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await delete_quietly(call.message)
     await call.answer()
 
 
@@ -380,7 +431,7 @@ async def topup_amount(m: types.Message, state: FSMContext, db: Database):
     await delete_quietly(m)
     await show_prompt(m, state, "Quyidagi karta raqamiga kerakli summani o‘tkazing!\n\n"
                                 f"Summa: {money(amount)} so‘m\nKarta: {card}\n\n"
-                                "To‘lovni amalga oshirgach, to‘lov chek rasmini jo‘nating!")
+                                "To‘lovni amalga oshirgach, to‘lov chek rasmini jo‘nating!", back_kb("topupback"))
 
 
 @router.message(TopUp.receipt, F.photo)
@@ -396,7 +447,7 @@ async def receipt(m: types.Message, state: FSMContext, db: Database, bot: Bot):
     photo = m.photo[-1]
     duplicate = await db.receipt_seen(photo.file_unique_id)
     rid = await db.create_topup(m.from_user.id, amount, photo.file_id, photo.file_unique_id)
-    username = f"@{m.from_user.username}" if m.from_user.username else "Mavjud emas"
+    username = username_text(m.from_user.username)
     caption = (f"Hisobni to‘ldirish so‘rovi\n\nIsmi: {m.from_user.full_name}\nUser: {username}\n"
                f"ID: {m.from_user.id}\nSumma: {money(amount)} so‘m")
     if duplicate:
@@ -427,6 +478,15 @@ async def vipmenu(call: types.CallbackQuery, db: Database, bot: Bot, state: FSMC
     await call.answer()
 
 
+@router.callback_query(F.data == "vipnotice")
+async def vip_notice_click(call: types.CallbackQuery, db: Database, bot: Bot):
+    """«VIP olish» tugmasi (tugash haqidagi eslatmada): eslatma xabarining o‘zi tariflar ro‘yxatiga aylanadi."""
+    if not await guard_call(call, db, bot):
+        return
+    await call.message.edit_text("VIP tarifini tanlang:", reply_markup=rows_kb(await tariff_rows(db)))
+    await call.answer()
+
+
 @router.callback_query(F.data.startswith("vipbuy:"))
 async def vipbuy(call: types.CallbackQuery, db: Database, bot: Bot):
     if not await guard_call(call, db, bot):
@@ -442,7 +502,7 @@ async def vipbuy(call: types.CallbackQuery, db: Database, bot: Bot):
             f"Balansingizda yetarli mablag‘ yo‘q.\nKerak: {money(price)} so‘m\nBalansingiz: {money(available)} so‘m\n"
             "Hisobingizni to‘ldirish uchun Kabinetdagi \"Hisobni to‘ldirish\" bo‘limidan foydalaning!",
             show_alert=True)
-    await call.message.answer(
+    await call.message.edit_text(
         f"Tarif: {dict(TARIFFS)[days]}\nNarxi: {money(price)} so‘m\n\n"
         "Haqiqatdan ham ushbu VIP obunani sotib olmoqchimisiz?",
         reply_markup=confirm_kb(f"vipconfirm:{days}", "vipcancel"))
@@ -471,9 +531,10 @@ async def vipconfirm(call: types.CallbackQuery, db: Database, bot: Bot):
 
 
 # ------------------------------------------------------------------------ referral
-async def _send_ref_link(target, uid, bot, db):
+async def _send_ref_link(target, uid, bot, db, edit=False):
     link = await referral_link(uid, bot)
-    await target.answer(
+    send = target.edit_text if edit else target.answer
+    await send(
         f"Sizning shaxsiy referal havolangiz:\n{link}\n\nUshbu havolani ishonchli do‘stlaringizga yuboring. "
         f"Ular havola orqali botga kirib start bossa, hisobingizga {await db.setting('referral_bonus')} so‘m qo‘shiladi.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
@@ -497,7 +558,7 @@ async def referral(call: types.CallbackQuery, db: Database, bot: Bot, state: FSM
 async def ref_rules(call: types.CallbackQuery, db: Database, bot: Bot):
     if not await guard_call(call, db, bot, need_sub=False):
         return
-    await call.message.answer(REF_RULES, reply_markup=confirm_kb("refaccept", "refdecline"))
+    await call.message.edit_text(REF_RULES, reply_markup=confirm_kb("refaccept", "refdecline"))
     await call.answer()
 
 
@@ -506,8 +567,7 @@ async def refaccept(call: types.CallbackQuery, db: Database, bot: Bot):
     if not await guard_call(call, db, bot, need_sub=False):
         return
     await db.accept_rules(call.from_user.id)
-    await delete_quietly(call.message)
-    await _send_ref_link(call.message, call.from_user.id, bot, db)
+    await _send_ref_link(call.message, call.from_user.id, bot, db, edit=True)
     await call.answer()
 
 
@@ -535,7 +595,7 @@ async def claim_gift(call: types.CallbackQuery, db: Database, bot: Bot):
         if last:
             lines = ["Gift g‘oliblari:"]
             for i, w in enumerate(await db.gift_winners(gid), 1):
-                lines.append(f"{i}. {w['name']} | @{w['username'] or 'yo‘q'} | {w['user_id']}")
+                lines.append(f"{i}. {w['name']} | {username_text(w['username'])} | {w['user_id']}")
             await safe_call(lambda: bot.send_message(ADMIN_ID, "\n".join(lines)))
     elif status == "vip":
         await call.answer("Sizda allaqachon faol VIP obuna bor.", show_alert=True)

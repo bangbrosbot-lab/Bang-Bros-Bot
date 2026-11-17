@@ -19,7 +19,7 @@ from handlers.filters import PERMISSIONS, AdminOnly, has_permission, no_perm_tex
 from states import AddVideo, DeleteVideo, Settings, UserAdmin
 from timeutil import fmt_local
 from utils import (delete_quietly, esc, finish_prompt, is_not_modified, money,
-                   safe_call, show_prompt)
+                   safe_call, show_prompt, username_text)
 
 log = logging.getLogger(__name__)
 
@@ -93,12 +93,16 @@ async def edit_card(m, state, db):
     await show_prompt(m, state, f"Hozirgi karta: {await db.setting('card')}\nYangi karta raqamini yuboring!")
 
 
+async def vip_tariff_markup(db):
+    rows = [(f"{label}: {money(int(await db.setting(f'vip_{d}')))} so‘m", f"vipprice:{d}")
+            for d, label in [(1, "1 kunlik"), (7, "1 haftalik"), (30, "1 oylik")]]
+    return kb.rows_kb(rows)
+
+
 async def edit_vip(m, state, db):
     if not await require(m, db, "edit"):
         return
-    rows = [(f"{label}: {money(int(await db.setting(f'vip_{d}')))} so‘m", f"vipprice:{d}")
-            for d, label in [(1, "1 kunlik"), (7, "1 haftalik"), (30, "1 oylik")]]
-    await m.answer("O‘zgartirmoqchi bo‘lgan VIP tarifini tanlang:", reply_markup=kb.rows_kb(rows))
+    await m.answer("O‘zgartirmoqchi bo‘lgan VIP tarifini tanlang:", reply_markup=await vip_tariff_markup(db))
 
 
 async def edit_info(m, state, db):
@@ -164,7 +168,7 @@ async def send_id_page(target, db, page, edit=False):
     lines, rows = ["Barcha foydalanuvchilar ro‘yxati", f"Jami: {total}", ""], []
     for u in await db.users_page(page, 5):
         lines += [f"Ism: {esc(u['name']) or 'Mavjud emas'}",
-                  f"User: @{esc(u['username'])}" if u["username"] else "User: mavjud emas",
+                  f"User: {esc(username_text(u['username']))}",
                   f"ID: <code>{u['user_id']}</code>", ""]
         rows.append([InlineKeyboardButton(text=f"{u['name'] or u['user_id']} · {u['user_id']}",
                                           callback_data=f"uid:{u['user_id']}")])
@@ -278,7 +282,17 @@ async def choose_q(c: types.CallbackQuery, state: FSMContext):
         return await c.answer()
     await state.update_data(current_quality=q)
     await state.set_state(AddVideo.quality_file)
-    await show_prompt(c.message, state, f"Endi shu sifatdagi ({q}) videoni jo‘nating!")
+    await show_prompt(c.message, state, f"Endi shu sifatdagi ({q}) videoni jo‘nating!", kb.back_kb("addqback"))
+    await c.answer()
+
+
+@router.callback_query(F.data == "addqback")
+async def choose_q_back(c: types.CallbackQuery, state: FSMContext):
+    qs = (await state.get_data()).get("qualities", {})
+    await state.set_state(AddVideo.quality)
+    await show_prompt(c.message, state,
+                      "Video qabul qilindi, yana boshqa sifat qo‘shasizmi?" if qs else "Birinchi sifatni tanlang:",
+                      quality_kb([q for q in QUALITIES if q not in qs], with_done=bool(qs)))
     await c.answer()
 
 
@@ -455,9 +469,16 @@ async def vipprice_choose(c: types.CallbackQuery, state: FSMContext, db: Databas
     if days not in (1, 7, 30):
         return await c.answer()
     await state.clear()
-    await state.update_data(vip_days=days)
+    await state.update_data(vip_days=days, prompt_id=c.message.message_id, prompt_chat_id=c.message.chat.id)
     await state.set_state(Settings.vip_price)
-    await show_prompt(c.message, state, "Yangi narxni so‘mda yuboring:")
+    await show_prompt(c.message, state, "Yangi narxni so‘mda yuboring:", kb.back_kb("vipback"))
+    await c.answer()
+
+
+@router.callback_query(F.data == "vipback")
+async def vipprice_back(c: types.CallbackQuery, state: FSMContext, db: Database):
+    await state.clear()
+    await c.message.edit_text("O‘zgartirmoqchi bo‘lgan VIP tarifini tanlang:", reply_markup=await vip_tariff_markup(db))
     await c.answer()
 
 
@@ -493,9 +514,11 @@ async def add_mand(c: types.CallbackQuery, state: FSMContext):
     if not await _main_only(c):
         return
     await state.clear()
+    await state.update_data(prompt_id=c.message.message_id, prompt_chat_id=c.message.chat.id)
     await state.set_state(Settings.mandatory_channel)
     await show_prompt(c.message, state, "Kanal ID sini va qo‘shilish havolasini quyidagi ko‘rinishda yuboring:\n"
-                                        "ID | https://t.me/...\nMaxfiy kanal uchun invite link yuboring.")
+                                        "ID | https://t.me/...\nMaxfiy kanal uchun invite link yuboring.",
+                      kb.back_kb("chback"))
     await c.answer()
 
 
@@ -529,8 +552,19 @@ async def special_start(c: types.CallbackQuery, state: FSMContext):
     if not await _main_only(c):
         return
     await state.clear()
+    await state.update_data(prompt_id=c.message.message_id, prompt_chat_id=c.message.chat.id)
     await state.set_state(Settings.special_channel)
-    await show_prompt(c.message, state, "Botni kanalga admin qilib tayinlang va kanal ID sini jo‘nating!")
+    await show_prompt(c.message, state, "Botni kanalga admin qilib tayinlang va kanal ID sini jo‘nating!",
+                      kb.back_kb("chback"))
+    await c.answer()
+
+
+@router.callback_query(F.data == "chback")
+async def channels_back(c: types.CallbackQuery, state: FSMContext):
+    if not await _main_only(c):
+        return
+    await state.clear()
+    await c.message.edit_text("Kanallar bo‘limidasiz.", reply_markup=channels_kb())
     await c.answer()
 
 
@@ -575,7 +609,7 @@ async def del_channels(c: types.CallbackQuery, db: Database, bot: Bot):
         rows.append((title, f"delch:{x['channel_id']}"))
     if not rows:
         return await c.answer("Kanallar ro‘yxati bo‘sh.", show_alert=True)
-    await c.message.answer("O‘chirish uchun kanalni tanlang:", reply_markup=kb.rows_kb(rows))
+    await c.message.edit_text("O‘chirish uchun kanalni tanlang:", reply_markup=kb.rows_kb(rows + [("Orqaga", "chback")]))
     await c.answer()
 
 
@@ -584,8 +618,8 @@ async def del_channel_ask(c: types.CallbackQuery):
     if not await _main_only(c):
         return
     cid = int(c.data.split(":")[1])
-    await c.message.answer(f"{cid} kanalini o‘chirishni xohlaysizmi?",
-                           reply_markup=kb.confirm_kb(f"delchyes:{cid}", "delchno"))
+    await c.message.edit_text(f"{cid} kanalini o‘chirishni xohlaysizmi?",
+                              reply_markup=kb.confirm_kb(f"delchyes:{cid}", "delchno"))
     await c.answer()
 
 
@@ -601,9 +635,8 @@ async def del_channel_yes(c: types.CallbackQuery, db: Database):
 
 @router.callback_query(F.data == "delchno")
 async def del_channel_no(c: types.CallbackQuery):
-    await c.message.edit_text("Kanal o‘chirish bekor qilindi.")
-    await c.message.answer("Kanallar bo‘limidasiz.", reply_markup=channels_kb())
-    await c.answer()
+    await c.message.edit_text("Kanallar bo‘limidasiz.", reply_markup=channels_kb())
+    await c.answer("Kanal o‘chirish bekor qilindi.")
 
 
 # ===================================================================== TO‘LOVLAR
@@ -702,7 +735,7 @@ async def show_user(target, db, u, edit=False, actor_id=None, prompt_data=None):
         extra = f"Holati: Vip obunachi\nMuddati: {fmt_local(u['vip_until'])}"
     else:
         extra = "Holati: Oddiy obunachi"
-    username = "@" + u["username"] if u["username"] else "Mavjud emas"
+    username = username_text(u["username"])
     balance = int(u["balance"] or 0) + int(u["referral_balance"] or 0)
     text = (f"Foydalanuvchi ma’lumotlari\n\nIsm: {u['name'] or 'Mavjud emas'}\nUsername: {username}\nID: {uid}\n"
             f"Balans: {money(balance)} so‘m\n{extra}\nDo‘stlar: {friends}\n"
@@ -759,7 +792,19 @@ async def user_action(c: types.CallbackQuery, state: FSMContext, db: Database):
     prompts = {"add": "Qo‘shiladigan summani yuboring:", "sub": "Ayiriladigan summani yuboring:",
                "vip": "VIP muddati: 1, 7 yoki 30 kun yuboring:", "msg": "Foydalanuvchiga yuboriladigan xabarni jo‘nating:"}
     await state.set_state(UserAdmin.add_amount if action in ("add", "sub", "vip") else UserAdmin.message)
-    await show_prompt(c.message, state, prompts[action])
+    await show_prompt(c.message, state, prompts[action], kb.back_kb(f"uback:{uid}"))
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("uback:"))
+async def user_back(c: types.CallbackQuery, state: FSMContext, db: Database):
+    if not await require(c, db, "users", alert=True):
+        return
+    await state.clear()
+    u = await db.user(int(c.data.split(":")[1]))
+    if not u:
+        return await c.answer("Foydalanuvchi topilmadi.", show_alert=True)
+    await show_user(c.message, db, u, True, c.from_user.id)
     await c.answer()
 
 
@@ -856,7 +901,8 @@ async def user_message(m: types.Message, state: FSMContext, bot: Bot, db: Databa
 async def show_admin_permissions(target, uid, selected):
     rows = [[InlineKeyboardButton(text=f"{'✅' if key in selected else '❌'} {label}",
                                   callback_data=f"uperm:{uid}:{key}")] for key, label in PERMISSIONS.items()]
-    rows.append([InlineKeyboardButton(text="Bo‘ldi", callback_data=f"upermdone:{uid}")])
+    rows.append([InlineKeyboardButton(text="Orqaga", callback_data=f"uadminback:{uid}"),
+                 InlineKeyboardButton(text="Bo‘ldi", callback_data=f"upermdone:{uid}")])
     markup, text = InlineKeyboardMarkup(inline_keyboard=rows), "Admin imkoniyatlarini belgilang:"
     try:
         await target.edit_text(text, reply_markup=markup)
@@ -876,6 +922,18 @@ async def user_admin_start(c: types.CallbackQuery, state: FSMContext, db: Databa
     await state.set_state(UserAdmin.admin_permissions)
     await show_admin_permissions(c.message, uid, [])
     await c.answer()
+
+
+@router.callback_query(F.data.startswith("uadminback:"))
+async def admin_perm_back(c: types.CallbackQuery, state: FSMContext, db: Database):
+    """Admin tayinlashdan voz kechish: hech narsa saqlanmaydi, foydalanuvchi profiliga qaytiladi."""
+    if not await require(c, db, "admin_manage", alert=True):
+        return
+    await state.clear()
+    u = await db.user(int(c.data.split(":")[1]))
+    await c.answer("Admin tayinlash bekor qilindi.")
+    if u:
+        await show_user(c.message, db, u, True, c.from_user.id)
 
 
 @router.callback_query(F.data.startswith("uperm:"))

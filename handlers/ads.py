@@ -288,15 +288,34 @@ async def gift_kind(c: types.CallbackQuery, state: FSMContext):
     if kind not in ("money", "vip"):
         return await c.answer()
     await state.update_data(gift_kind=kind)
+    await _ask_gift_detail(c.message, state, kind)
+    await c.answer()
+
+
+async def _ask_gift_detail(message, state, kind):
     if kind == "vip":
         await state.set_state(Gift.tariff)
-        await show_prompt(c.message, state, "VIP muddatini tanlang:", InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="1 kun", callback_data="giftdays:1"),
-            InlineKeyboardButton(text="7 kun", callback_data="giftdays:7"),
-            InlineKeyboardButton(text="30 kun", callback_data="giftdays:30")]]))
+        await show_prompt(message, state, "VIP muddatini tanlang:", InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="1 kun", callback_data="giftdays:1"),
+             InlineKeyboardButton(text="7 kun", callback_data="giftdays:7"),
+             InlineKeyboardButton(text="30 kun", callback_data="giftdays:30")],
+            [InlineKeyboardButton(text="Orqaga", callback_data="giftback:type")]]))
     else:
         await state.set_state(Gift.amount)
-        await show_prompt(c.message, state, "Har bir g‘olib oladigan pul miqdorini yuboring (so‘m):")
+        await show_prompt(message, state, "Har bir g‘olib oladigan pul miqdorini yuboring (so‘m):",
+                          kb.back_kb("giftback:type"))
+
+
+@router.callback_query(F.data.startswith("giftback:"))
+async def gift_back(c: types.CallbackQuery, state: FSMContext):
+    step = c.data.split(":")[1]
+    if step == "prev":
+        kind = (await state.get_data()).get("gift_kind")
+        if kind in ("money", "vip"):
+            await _ask_gift_detail(c.message, state, kind)
+            return await c.answer()
+    await state.set_state(Gift.gift_type)
+    await show_prompt(c.message, state, "Gift turini tanlang:", gift_kind_kb())
     await c.answer()
 
 
@@ -307,7 +326,7 @@ async def gift_days(c: types.CallbackQuery, state: FSMContext):
         return await c.answer()
     await state.update_data(gift_days=days)
     await state.set_state(Gift.winners)
-    await show_prompt(c.message, state, "Nechta g‘olib bo‘lishini yuboring:")
+    await show_prompt(c.message, state, "Nechta g‘olib bo‘lishini yuboring:", kb.back_kb("giftback:prev"))
     await c.answer()
 
 
@@ -327,7 +346,7 @@ async def gift_amount(m: types.Message, state: FSMContext):
     await state.update_data(gift_amount=n)
     await state.set_state(Gift.winners)
     await delete_quietly(m)
-    await show_prompt(m, state, "Nechta g‘olib bo‘lishini yuboring:")
+    await show_prompt(m, state, "Nechta g‘olib bo‘lishini yuboring:", kb.back_kb("giftback:prev"))
 
 
 @router.message(Gift.winners)
