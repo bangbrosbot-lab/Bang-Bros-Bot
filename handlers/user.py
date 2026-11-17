@@ -86,8 +86,10 @@ async def welcome(m, bot, db, user=None, state=None, edit_message_id=None):
             except Exception:
                 pass
         if url:
-            rows.append([InlineKeyboardButton(text="Kanalga kirish", url=url)])
-    rows.extend(main_menu().inline_keyboard)
+            rows.append([InlineKeyboardButton(text="Kanalga kirish", url=url),
+                         InlineKeyboardButton(text="Asosiy menyu", callback_data="umenu:home")])
+    if not rows:
+        rows.append([InlineKeyboardButton(text="Asosiy menyu", callback_data="umenu:home")])
     markup = InlineKeyboardMarkup(inline_keyboard=rows)
     msg = None
     unchanged = False
@@ -152,8 +154,8 @@ async def send_full_video(message, db, v, quality_row, vid):
 async def vote_markup(db, vid, bot_username):
     likes, dislikes = await db.vote_counts(vid)
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"Yoqdi ({likes})" if likes > 0 else "Yoqdi", callback_data=f"vote:{vid}:1"),
-         InlineKeyboardButton(text=f"Yoqmadi ({dislikes})" if dislikes > 0 else "Yoqmadi", callback_data=f"vote:{vid}:-1")],
+        [InlineKeyboardButton(text=f"Yoqdi {likes}" if likes > 0 else "Yoqdi", callback_data=f"vote:{vid}:1"),
+         InlineKeyboardButton(text=f"Yoqmadi {dislikes}" if dislikes > 0 else "Yoqmadi", callback_data=f"vote:{vid}:-1")],
         [InlineKeyboardButton(text="Videoni ko‘rish", url=f"https://t.me/{bot_username}?start=video_{vid}")]])
 
 
@@ -256,15 +258,6 @@ async def check(call: types.CallbackQuery, db: Database, bot: Bot, state: FSMCon
 
 @router.callback_query(F.data == "noop")
 async def noop(call: types.CallbackQuery):
-    await call.answer()
-
-
-@router.callback_query(F.data == "subback")
-async def sub_back(call: types.CallbackQuery, state: FSMContext):
-    await delete_quietly(call.message)
-    msg = await call.message.answer("Asosiy menyu", reply_markup=main_menu())
-    await state.clear()
-    await state.update_data(ui_message_id=msg.message_id, ui_chat_id=msg.chat.id)
     await call.answer()
 
 
@@ -392,7 +385,7 @@ async def ad_vote(call: types.CallbackQuery, db: Database):
     rows = [[InlineKeyboardButton(text=b["text"], url=b["url"]) for b in row]
             for row in json.loads(campaign["url_buttons"] or "[]")]
     for row in json.loads(campaign["like_layout"] or "[]"):
-        rows.append([InlineKeyboardButton(text=(f"{i['text']} ({counts.get(i['index'], 0)})"
+        rows.append([InlineKeyboardButton(text=(f"{i['text']} {counts.get(i['index'], 0)}"
                                                        if counts.get(i['index'], 0) > 0 else i['text']),
                                           callback_data=f"advote:{campaign_id}:{i['index']}") for i in row])
     try:
@@ -593,9 +586,11 @@ async def receipt(m: types.Message, state: FSMContext, db: Database, bot: Bot):
         await safe_call(lambda a=admin_id: bot.send_photo(
             a, photo.file_id, caption=caption, reply_markup=kb, protect_content=True))
     await delete_quietly(m)
-    await finish_prompt(m, state, "To‘lov chekingiz adminga yuborildi.\n"
+    notice = await finish_prompt(m, state, "To‘lov chekingiz adminga yuborildi.\n"
                                   f"Admin to‘lovni tasdiqlaganidan so‘ng, {money(amount)} so‘m hisobingizga qo‘shiladi.",
                         back_kb("umenu:cabinet"))
+    if notice:
+        await db.set_topup_notice(rid, notice.chat.id, notice.message_id)
 
 
 @router.message(TopUp.receipt)

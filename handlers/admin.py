@@ -680,10 +680,13 @@ async def del_channel_no(c: types.CallbackQuery):
 
 
 # ===================================================================== TO‘LOVLAR
-async def _close_receipt(bot, chat_id, message_id, caption, status):
-    """Chek xabaridan tugmalarni olib, holatini yozib qo‘yadi (xabarning o‘zi saqlanadi)."""
-    await safe_call(lambda: bot.edit_message_caption(
-        chat_id=chat_id, message_id=message_id, caption=f"{caption or ''}\n\n{status}", reply_markup=None))
+async def _close_receipt(bot, chat_id, message_id):
+    """Ko‘rib chiqilgan chek rasmi va uning tugmalarini chatdan olib tashlaydi."""
+    await safe_call(lambda: bot.delete_message(chat_id, message_id))
+
+
+async def _admin_topup_result(c: types.CallbackQuery, text: str):
+    await c.message.answer(text, reply_markup=kb.back_kb("amenu:home", "Asosiy menyu"))
 
 
 @router.callback_query(F.data.startswith("topupok:"))
@@ -691,57 +694,40 @@ async def topup_approve(c: types.CallbackQuery, state: FSMContext, db: Database,
     if not await require(c, db, "payments", alert=True):
         return
     await state.clear()
-    r = await db.approve_topup(int(c.data.split(":")[1]))
+    rid = int(c.data.split(":")[1])
+    r = await db.approve_topup(rid)
     if not r:
         return await c.answer(ALREADY, show_alert=True)
-    await safe_call(lambda: bot.send_message(
-        r["user_id"], f"To‘lov cheki tasdiqlandi, Hisobingiz {money(r['amount'])} so‘mga to‘ldirildi."))
-    await _close_receipt(bot, c.message.chat.id, c.message.message_id, c.message.caption,
-                         f"✅ Tasdiqlandi ({c.from_user.full_name})")
+    await _close_receipt(bot, c.message.chat.id, c.message.message_id)
+    if r["user_notice_chat"] and r["user_notice_msg"]:
+        await safe_call(lambda: bot.delete_message(r["user_notice_chat"], r["user_notice_msg"]))
+    user_text = f"To‘lov cheki tasdiqlandi, Hisobingiz {money(r['amount'])} so‘mga to‘ldirildi."
+    await safe_call(lambda: bot.send_message(r["user_id"], user_text,
+        reply_markup=kb.back_kb("umenu:home", "Asosiy menyu")))
+    await _admin_topup_result(c, "To‘lov so‘rovi tasdiqlandi.")
     await c.answer("To‘lov tasdiqlandi.")
 
 
 @router.callback_query(F.data.startswith("topupno:"))
-async def topup_reject(c: types.CallbackQuery, state: FSMContext, db: Database):
+async def topup_reject(c: types.CallbackQuery, state: FSMContext, db: Database, bot: Bot):
     if not await require(c, db, "payments", alert=True):
         return
+    await state.clear()
     rid = int(c.data.split(":")[1])
-    if not await db.pending_topup(rid):
-        return await c.answer(ALREADY, show_alert=True)
-    await state.clear()
-    prompt = await c.message.answer("Rad etish sababini yozing!",
-                                    reply_markup=kb.rows_kb([("Orqaga", "topupcancel")]))
-    await state.update_data(reject_topup_id=rid, reject_chat=c.message.chat.id, reject_msg=c.message.message_id,
-                            reject_caption=c.message.caption, prompt_id=prompt.message_id,
-                            prompt_chat_id=prompt.chat.id)
-    await state.set_state(UserAdmin.reject_reason)
-    await c.answer()
-
-
-@router.callback_query(F.data == "topupcancel")
-async def topup_reject_cancel(c: types.CallbackQuery, state: FSMContext):
-    await state.clear()
-    await delete_quietly(c.message)
-    await c.answer("Bekor qilindi. Chek hali ham kutilmoqda.")
-
-
-@router.message(UserAdmin.reject_reason)
-async def topup_reject_reason(m: types.Message, state: FSMContext, db: Database, bot: Bot):
-    if not await require(m, db, "payments"):
-        return await state.clear()
-    reason = (m.text or "").strip()
-    if not reason:
-        return await show_prompt(m, state, "Rad etish sababini matn ko‘rinishida yozing!",
-                                 kb.rows_kb([("Orqaga", "topupcancel")]))
-    d = await state.get_data()
-    r = await db.reject_topup(d.get("reject_topup_id"), reason)
+    r = await db.reject_topup(rid, None)
     if not r:
-        return await finish_prompt(m, state, ALREADY, kb.back_kb("amenu:home"))
-    await safe_call(lambda: bot.send_message(
-        r["user_id"], f"To‘lovingiz rad etildi.\nHisobingizga pul qo‘shilmadi.\nSababi: {reason}"))
-    await _close_receipt(bot, d["reject_chat"], d["reject_msg"], d.get("reject_caption"),
-                         f"❌ Rad etildi ({m.from_user.full_name}): {reason}")
-    await finish_prompt(m, state, "To‘lov rad qilindi.\nSababi foydalanuvchiga yetkazildi.", kb.back_kb("amenu:home"))
+        return await c.answer(ALREADY, show_alert=True)
+    await _close_receipt(bot, c.message.chat.id, c.message.message_id)
+    if r["user_notice_chat"] and r["user_notice_msg"]:
+        await safe_call(lambda: bot.delete_message(r["user_notice_chat"], r["user_notice_msg"]))
+    user_kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="Yordam", callback_data="umenu:help"),
+        InlineKeyboardButton(text="Bosh menyu", callback_data="umenu:home")]])
+    await safe_call(lambda: bot.send_message(r["user_id"],
+        "To‘lovingiz rad etildi.\n\nSababini bilish uchun yordam bo‘limidan foydalaning!",
+        reply_markup=user_kb))
+    await _admin_topup_result(c, "To‘lov so‘rovi rad etildi.")
+    await c.answer("To‘lov rad etildi.")
 
 
 # ===================================================================== FOYDALANUVCHILAR

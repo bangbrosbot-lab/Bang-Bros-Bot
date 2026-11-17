@@ -76,7 +76,7 @@ def ad_markup(data, campaign_id=None, counts=None):
         for item in row:
             i, label = item["index"], item["text"]
             buttons.append(InlineKeyboardButton(
-                text=(f"{label} ({counts.get(i, 0)})" if counts.get(i, 0) > 0 else label) if campaign_id else label,
+                text=(f"{label} {counts.get(i, 0)}" if counts.get(i, 0) > 0 else label) if campaign_id else label,
                 callback_data=f"advote:{campaign_id}:{i}" if campaign_id else "adpreview"))
         rows.append(buttons)
     return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
