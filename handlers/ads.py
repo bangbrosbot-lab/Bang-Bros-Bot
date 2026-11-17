@@ -76,7 +76,7 @@ def ad_markup(data, campaign_id=None, counts=None):
         for item in row:
             i, label = item["index"], item["text"]
             buttons.append(InlineKeyboardButton(
-                text=f"{label} ({counts.get(i, 0)})" if campaign_id else label,
+                text=(f"{label} ({counts.get(i, 0)})" if counts.get(i, 0) > 0 else label) if campaign_id else label,
                 callback_data=f"advote:{campaign_id}:{i}" if campaign_id else "adpreview"))
         rows.append(buttons)
     return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
@@ -97,7 +97,8 @@ async def broadcast_preview(target, state):
         [InlineKeyboardButton(text="Like tugmalarni o‘chirish" if d.get("like_rows") else "Like tugmalar qo‘shish",
                               callback_data="bclike:remove" if d.get("like_rows") else "bclike:add")],
         [InlineKeyboardButton(text="Reklama tayyor", callback_data="bcdone"),
-         InlineKeyboardButton(text="Reklamani bekor qilish", callback_data="bccancel")]]
+         InlineKeyboardButton(text="Reklamani bekor qilish", callback_data="bccancel")],
+        [InlineKeyboardButton(text="Orqaga", callback_data="amenu:desk")]]
     await show_prompt(msg, state, "Reklama ko‘rinishi tayyor. Kerakli tugmalarni qo‘shing yoki reklama tayyor tugmasini bosing.",
                       InlineKeyboardMarkup(inline_keyboard=controls))
 
@@ -105,7 +106,8 @@ async def broadcast_preview(target, state):
 async def start_broadcast(m, state, db):
     await state.set_state(Broadcast.content)
     await show_prompt(m, state, "Jo‘natmoqchi bo‘lgan reklamangizni yuboring!\n\n"
-                                "Reklama rasm + matn, video + matn, GIF, MP3 yoki faqat matn bo‘lishi mumkin.")
+                                "Reklama rasm + matn, video + matn, GIF, MP3 yoki faqat matn bo‘lishi mumkin.",
+                      kb.back_kb("amenu:desk"))
 
 
 @router.message(Broadcast.content)
@@ -113,7 +115,8 @@ async def broadcast_content(m: types.Message, state: FSMContext):
     try:
         preview = await m.bot.copy_message(m.chat.id, m.chat.id, m.message_id)
     except Exception:
-        return await m.answer("Bu xabarni reklama sifatida qabul qilib bo‘lmadi. Boshqa media yoki matn yuboring.")
+        return await show_prompt(m, state, "Bu xabarni reklama sifatida qabul qilib bo‘lmadi. Boshqa media yoki matn yuboring.",
+                                 kb.back_kb("amenu:desk"))
     await delete_quietly(m)
     await state.update_data(source_chat=m.chat.id, source_message=preview.message_id,
                             url_buttons=[], like_rows=[], like_options=[])
@@ -176,7 +179,7 @@ async def broadcast_button_url(m: types.Message, state: FSMContext):
     try:
         rows = parse_ad_buttons(m.text or "")
     except ValueError as e:
-        return await m.answer(str(e))
+        return await show_prompt(m, state, str(e), kb.back_kb("bcback"))
     await state.update_data(url_buttons=rows)
     await delete_quietly(m)
     await state.set_state(Broadcast.content)
@@ -189,7 +192,7 @@ async def broadcast_like_layout(m: types.Message, state: FSMContext):
     try:
         rows, options = parse_like_layout(raw)
     except ValueError as e:
-        return await m.answer(str(e))
+        return await show_prompt(m, state, str(e), kb.back_kb("bcback"))
     await state.update_data(like_rows=rows, like_options=options)
     await delete_quietly(m)
     await state.set_state(Broadcast.content)
@@ -221,7 +224,10 @@ async def broadcast_prepare(c: types.CallbackQuery, state: FSMContext):
         return await c.answer()
     await state.update_data(audience=mode)
     await show_prompt(c.message, state, "Reklama jo‘natishga tayyor. Jo‘natilsinmi?",
-                      kb.confirm_kb("basend:yes", "basend:no"))
+                      InlineKeyboardMarkup(inline_keyboard=[
+                          [InlineKeyboardButton(text="Ha", callback_data="basend:yes"),
+                           InlineKeyboardButton(text="Orqaga", callback_data="basend:no")],
+                          [InlineKeyboardButton(text="Bekor qilish", callback_data="bccancel")]]))
     await c.answer()
 
 
@@ -274,7 +280,8 @@ async def broadcast_send(c: types.CallbackQuery, state: FSMContext, db: Database
 
 # ===================================================================== GIFT
 def gift_kind_kb():
-    return kb.rows_kb([("Pul tarqatish", "giftkind:money"), ("VIP tarqatish", "giftkind:vip")])
+    return kb.rows_kb([("Pul tarqatish", "giftkind:money"), ("VIP tarqatish", "giftkind:vip"),
+                       ("Orqaga", "amenu:desk")])
 
 
 async def start_gift(m, state, db):
@@ -342,7 +349,7 @@ def _positive_int(text):
 async def gift_amount(m: types.Message, state: FSMContext):
     n = _positive_int(m.text)
     if not n:
-        return await m.answer("Musbat summa kiriting.")
+        return await show_prompt(m, state, "Musbat summa kiriting.", kb.back_kb("giftback:type"))
     await state.update_data(gift_amount=n)
     await state.set_state(Gift.winners)
     await delete_quietly(m)
@@ -353,14 +360,16 @@ async def gift_amount(m: types.Message, state: FSMContext):
 async def gift_winners_count(m: types.Message, state: FSMContext):
     n = _positive_int(m.text)
     if not n:
-        return await m.answer("Musbat son kiriting.")
+        return await show_prompt(m, state, "Musbat son kiriting.", kb.back_kb("giftback:prev"))
     await state.update_data(gift_winners=n)
     d = await state.get_data()
     await state.set_state(Gift.confirm)
     desc = f"{money(d.get('gift_amount', 0))} so‘m" if d.get("gift_kind") == "money" else f"{d.get('gift_days')} kunlik VIP"
     await delete_quietly(m)
     await show_prompt(m, state, f"Gift: {desc}\nG‘oliblar: {n} ta\nTasdiqlaysizmi?",
-                      kb.confirm_kb("giftconfirm:yes", "giftconfirm:no"))
+                      InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Ha", callback_data="giftconfirm:yes"),
+             InlineKeyboardButton(text="Orqaga", callback_data="giftconfirm:no")]]))
 
 
 async def _run_gift(bot, ids, body, markup, report_chat, report_msg):

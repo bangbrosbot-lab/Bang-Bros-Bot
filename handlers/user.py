@@ -12,7 +12,7 @@ from aiogram.types import (InlineKeyboardButton, InlineKeyboardMarkup,
 
 from access import (BLOCKED_TEXT, NO_ACCESS, ask_sub, guard_call, guard_message,
                     subscribed)
-from config import ADMIN_ID, CHANNEL_URL, MAX_PENDING_TOPUPS, MAX_TOPUP, MIN_TOPUP
+from config import ADMIN_ID, CHANNEL_URL, MAX_PENDING_TOPUPS, MAX_TOPUP, MIN_TOPUP, is_owner
 from db import Database
 from keyboards import (admin_menu, back_kb, blocked_menu, confirm_kb, main_menu,
                        rows_kb)
@@ -69,7 +69,7 @@ async def referral_link(user_id: int, bot: Bot) -> str:
     return f"https://t.me/{me.username}?start=ref{user_id}"
 
 
-async def welcome(m, bot, db, user=None):
+async def welcome(m, bot, db, user=None, state=None, edit_message_id=None):
     user = user or m.from_user
     text = (f"Salom, {user.first_name}! Bang Bros’ga xush kelibsiz!\n\n"
             "Videolarni tomosha qilish uchun maxsus kanalimizga kiring va o‘zingizga yoqqan videoni "
@@ -87,8 +87,28 @@ async def welcome(m, bot, db, user=None):
                 pass
         if url:
             rows.append([InlineKeyboardButton(text="Kanalga kirish", url=url)])
-    await m.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows) if rows else None)
-    await m.answer("Asosiy menyu", reply_markup=main_menu())
+    rows.extend(main_menu().inline_keyboard)
+    markup = InlineKeyboardMarkup(inline_keyboard=rows)
+    msg = None
+    unchanged = False
+    if edit_message_id:
+        try:
+            msg = await bot.edit_message_text(text, chat_id=m.chat.id, message_id=edit_message_id,
+                                              reply_markup=markup)
+        except Exception as e:
+            if is_not_modified(e):
+                unchanged = True
+            else:
+                await safe_call(lambda: bot.delete_message(m.chat.id, edit_message_id))
+    if unchanged:
+        if state:
+            await state.update_data(ui_message_id=edit_message_id, ui_chat_id=m.chat.id)
+        return None
+    if msg is None:
+        msg = await m.answer(text, reply_markup=markup)
+    if state:
+        await state.update_data(ui_message_id=msg.message_id, ui_chat_id=msg.chat.id)
+    return msg
 
 
 async def notify_new_user(bot, user, referrer=None):
@@ -105,17 +125,18 @@ async def deliver_teaser(m, db, vid):
     v = await db.video(vid)
     if not v:
         return await m.answer(VIDEO_GONE)
-    await m.answer_video(
+    return await m.answer_video(
         v["teaser_id"], caption=v["caption"], protect_content=True,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="To‘liq video", callback_data=f"full:{vid}"),
-            InlineKeyboardButton(text="Bosh menyu", callback_data="umenu:home"),
+            InlineKeyboardButton(text="Orqaga", callback_data="umenu:home"),
         ]]))
 
 
 def video_kb(vid: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="Video sifatini almashtirish", callback_data=f"change:{vid}")]])
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Video sifatini almashtirish", callback_data=f"change:{vid}")],
+        [InlineKeyboardButton(text="Orqaga", callback_data="umenu:home")]])
 
 
 def full_caption(v, quality_name: str, views: int) -> str:
@@ -124,15 +145,15 @@ def full_caption(v, quality_name: str, views: int) -> str:
 
 async def send_full_video(message, db, v, quality_row, vid):
     views = await db.view_count(vid)
-    await message.answer_video(quality_row["file_id"], caption=full_caption(v, quality_row["quality"], views),
-                               protect_content=True, reply_markup=video_kb(vid))
+    return await message.answer_video(quality_row["file_id"], caption=full_caption(v, quality_row["quality"], views),
+                                      protect_content=True, reply_markup=video_kb(vid))
 
 
 async def vote_markup(db, vid, bot_username):
     likes, dislikes = await db.vote_counts(vid)
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"Yoqdi ({likes})", callback_data=f"vote:{vid}:1"),
-         InlineKeyboardButton(text=f"Yoqmadi ({dislikes})", callback_data=f"vote:{vid}:-1")],
+        [InlineKeyboardButton(text=f"Yoqdi ({likes})" if likes > 0 else "Yoqdi", callback_data=f"vote:{vid}:1"),
+         InlineKeyboardButton(text=f"Yoqmadi ({dislikes})" if dislikes > 0 else "Yoqmadi", callback_data=f"vote:{vid}:-1")],
         [InlineKeyboardButton(text="Videoni ko‘rish", url=f"https://t.me/{bot_username}?start=video_{vid}")]])
 
 
@@ -141,18 +162,47 @@ async def tariff_rows(db):
             for days, label in TARIFFS]
 
 
+async def replace_menu_message(message, text, reply_markup=None):
+    """Mavjud menyu xabarini yangilaydi; yangi xabar faqat tahrirlash imkonsiz bo‘lsa yuboriladi."""
+    try:
+        if message.video or message.photo or message.animation or message.document or message.audio:
+            await delete_quietly(message)
+            return await message.answer(text, reply_markup=reply_markup)
+        if message.text is not None:
+            return await message.edit_text(text, reply_markup=reply_markup)
+    except Exception as e:
+        if is_not_modified(e):
+            return message
+    await delete_quietly(message)
+    return await message.answer(text, reply_markup=reply_markup)
+
+
 # ------------------------------------------------------------------------ start
 @router.message(CommandStart())
 async def start(m: types.Message, command: CommandObject, db: Database, bot: Bot, state: FSMContext):
+    previous = await state.get_data()
+    old_ui_id = previous.get("ui_message_id") or previous.get("prompt_id")
+    old_ui_chat = previous.get("ui_chat_id") or previous.get("prompt_chat_id") or m.chat.id
+    if previous.get("source_chat") and previous.get("source_message"):
+        await safe_call(lambda: bot.delete_message(previous["source_chat"], previous["source_message"]))
+    await delete_quietly(m)
     await state.clear()
     ref, video_id = parse_start_args(command.args)
     uid = m.from_user.id
     is_new = await db.add_user(uid, m.from_user.full_name, m.from_user.username, ref)
     u = await db.user(uid)
     if u["blocked"]:
-        return await m.answer(BLOCKED_TEXT, reply_markup=blocked_menu())
-    if uid == ADMIN_ID or db.is_admin(uid):
-        return await m.answer("Admin panel", reply_markup=admin_menu())
+        if old_ui_id:
+            await safe_call(lambda: bot.delete_message(old_ui_chat, old_ui_id))
+        msg = await m.answer(BLOCKED_TEXT, reply_markup=blocked_menu())
+        await state.update_data(ui_message_id=msg.message_id, ui_chat_id=msg.chat.id)
+        return msg
+    if is_owner(uid) or db.is_admin(uid):
+        if old_ui_id:
+            await safe_call(lambda: bot.delete_message(old_ui_chat, old_ui_id))
+        msg = await m.answer("Admin panel", reply_markup=admin_menu())
+        await state.update_data(ui_message_id=msg.message_id, ui_chat_id=msg.chat.id)
+        return msg
 
     if is_new:
         valid_ref = ref if ref and ref != uid else None
@@ -166,15 +216,21 @@ async def start(m: types.Message, command: CommandObject, db: Database, bot: Bot
         await notify_new_user(bot, m.from_user, valid_ref if valid_ref and await db.user(valid_ref) else None)
 
     if not await subscribed(bot, db, uid):
+        if old_ui_id:
+            await safe_call(lambda: bot.delete_message(old_ui_chat, old_ui_id))
         if video_id is not None:  # obunadan keyin shu videoga qaytamiz
             await state.update_data(pending_video=video_id, need_menu=is_new)
-        return await ask_sub(m, db)
+        prompt = await ask_sub(m, db)
+        await state.update_data(ui_message_id=prompt.message_id, ui_chat_id=prompt.chat.id)
+        return prompt
     if video_id is not None:
-        await deliver_teaser(m, db, video_id)
-        if is_new:  # birinchi tanishuv: pastki menyu hali yo‘q — faqat bir marta
-            await m.answer("Asosiy menyu", reply_markup=main_menu())
-        return
-    await welcome(m, bot, db)
+        if old_ui_id:
+            await safe_call(lambda: bot.delete_message(old_ui_chat, old_ui_id))
+        msg = await deliver_teaser(m, db, video_id)
+        if msg:
+            await state.update_data(ui_message_id=msg.message_id, ui_chat_id=msg.chat.id)
+        return msg
+    return await welcome(m, bot, db, state=state, edit_message_id=old_ui_id)
 
 
 @router.callback_query(F.data == "check_sub")
@@ -190,11 +246,11 @@ async def check(call: types.CallbackQuery, db: Database, bot: Bot, state: FSMCon
     pending = data.get("pending_video")
     if pending is not None:
         await state.update_data(pending_video=None, need_menu=False)
-        await deliver_teaser(call.message, db, pending)
-        if data.get("need_menu"):  # yangi foydalanuvchi: pastki menyu faqat shu bir marta
-            await call.message.answer("Asosiy menyu", reply_markup=main_menu())
+        msg = await deliver_teaser(call.message, db, pending)
+        if msg:
+            await state.update_data(ui_message_id=msg.message_id, ui_chat_id=msg.chat.id)
     else:
-        await welcome(call.message, bot, db, call.from_user)
+        await welcome(call.message, bot, db, call.from_user, state=state)
     await call.answer()
 
 
@@ -203,9 +259,18 @@ async def noop(call: types.CallbackQuery):
     await call.answer()
 
 
+@router.callback_query(F.data == "subback")
+async def sub_back(call: types.CallbackQuery, state: FSMContext):
+    await delete_quietly(call.message)
+    msg = await call.message.answer("Asosiy menyu", reply_markup=main_menu())
+    await state.clear()
+    await state.update_data(ui_message_id=msg.message_id, ui_chat_id=msg.chat.id)
+    await call.answer()
+
+
 # ------------------------------------------------------------------------ videolar
 @router.callback_query(F.data.startswith("full:"))
-async def full(call: types.CallbackQuery, db: Database, bot: Bot):
+async def full(call: types.CallbackQuery, db: Database, bot: Bot, state: FSMContext):
     if not await guard_call(call, db, bot):
         return
     vid = int(call.data.split(":")[1])
@@ -217,7 +282,9 @@ async def full(call: types.CallbackQuery, db: Database, bot: Bot):
     if not v or not qs:
         return await call.answer(VIDEO_GONE, show_alert=True)
     await db.count_view(call.from_user.id, vid)
-    await send_full_video(call.message, db, v, qs[0], vid)
+    msg = await send_full_video(call.message, db, v, qs[0], vid)
+    await delete_quietly(call.message)
+    await state.update_data(ui_message_id=msg.message_id, ui_chat_id=msg.chat.id)
     await call.answer()
 
 
@@ -248,7 +315,7 @@ async def change_back(call: types.CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("quality:"))
-async def quality(call: types.CallbackQuery, db: Database, bot: Bot):
+async def quality(call: types.CallbackQuery, db: Database, bot: Bot, state: FSMContext):
     if not await guard_call(call, db, bot):
         return
     if not await db.vip(call.from_user.id):
@@ -274,8 +341,9 @@ async def quality(call: types.CallbackQuery, db: Database, bot: Bot):
                 pass
         else:  # zaxira yo‘l: eski usul (o‘chirib, yangisini yuborish)
             log.warning("edit_media ishlamadi (%s), zaxira usul", e)
+            msg = await send_full_video(call.message, db, v, chosen, vid)
             await delete_quietly(call.message)
-            await send_full_video(call.message, db, v, chosen, vid)
+            await state.update_data(ui_message_id=msg.message_id, ui_chat_id=msg.chat.id)
     await call.answer()
 
 
@@ -324,7 +392,8 @@ async def ad_vote(call: types.CallbackQuery, db: Database):
     rows = [[InlineKeyboardButton(text=b["text"], url=b["url"]) for b in row]
             for row in json.loads(campaign["url_buttons"] or "[]")]
     for row in json.loads(campaign["like_layout"] or "[]"):
-        rows.append([InlineKeyboardButton(text=f"{i['text']} ({counts.get(i['index'], 0)})",
+        rows.append([InlineKeyboardButton(text=(f"{i['text']} ({counts.get(i['index'], 0)})"
+                                                       if counts.get(i['index'], 0) > 0 else i['text']),
                                           callback_data=f"advote:{campaign_id}:{i['index']}") for i in row])
     try:
         await call.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
@@ -335,55 +404,65 @@ async def ad_vote(call: types.CallbackQuery, db: Database):
 
 
 # ------------------------------------------------------------------------ kabinet
-async def send_cabinet(target, uid, db):
+async def send_cabinet(target, uid, db, edit=False):
     u = await db.user(uid)
     if not u:
-        return await target.answer("Avval /start buyrug‘ini bosing.")
+        return await (target.edit_text("Avval /start buyrug‘ini bosing.") if edit else target.answer("Avval /start buyrug‘ini bosing."))
     is_vip = await db.vip(uid)
     status = f"VIP obunachi\nVIP muddati: {fmt_local(u['vip_until'])}" if is_vip else "Oddiy obunachi"
     total = int(u["balance"] or 0) + int(u["referral_balance"] or 0)
     friends = await db.referrals_count(uid)
-    return await target.answer(
-        f"Ism: {u['name']}\nUser: {username_text(u['username'])}\nID: {u['user_id']}\n"
-        f"Balans: {money(total)} so‘m\nHolati: {status}\nDo‘stlar: {friends}",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Hisobni to‘ldirish", callback_data="topup")]
-            + ([] if is_vip else [InlineKeyboardButton(text="VIP olish", callback_data="vipmenu")]),
-            [InlineKeyboardButton(text="Pul ishlash", callback_data="referral")],
-            [InlineKeyboardButton(text="Bosh menyu", callback_data="umenu:home")]]))
+    text = (f"Ism: {u['name']}\nUser: {username_text(u['username'])}\nID: {u['user_id']}\n"
+            f"Balans: {money(total)} so‘m\nHolati: {status}\nDo‘stlar: {friends}")
+    markup = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Hisobni to‘ldirish", callback_data="topup")]
+        + ([] if is_vip else [InlineKeyboardButton(text="VIP olish", callback_data="vipmenu")]),
+        [InlineKeyboardButton(text="Pul ishlash", callback_data="referral")],
+        [InlineKeyboardButton(text="Orqaga", callback_data="umenu:home")]])
+    return await (target.edit_text(text, reply_markup=markup) if edit else target.answer(text, reply_markup=markup))
 
 
 @router.callback_query(F.data.startswith("umenu:"))
 async def user_inline_menu(c: types.CallbackQuery, db: Database, bot: Bot, state: FSMContext):
-    if not await guard_call(c, db, bot):
-        return
     key = c.data.split(":", 1)[1]
+    # Orqaga/Kabinet tugmalari obuna tekshiruvi sababli bloklanib qolmasin.
+    if not await guard_call(c, db, bot, need_sub=key not in ("home", "cabinet")):
+        return
     await state.clear()
+    await state.update_data(ui_message_id=c.message.message_id, ui_chat_id=c.message.chat.id)
     await c.answer()
     if key == "home":
-        try:
-            await c.message.edit_reply_markup(reply_markup=None)
-        except Exception:
-            pass
-        return await c.message.answer("Asosiy menyu", reply_markup=main_menu())
+        msg = await replace_menu_message(c.message, "Asosiy menyu", main_menu())
+        if msg:
+            await state.update_data(ui_message_id=msg.message_id, ui_chat_id=msg.chat.id)
+        return msg
     if key == "cabinet":
-        return await send_cabinet(c.message, c.from_user.id, db)
+        return await send_cabinet(c.message, c.from_user.id, db, edit=True)
     if key == "about":
         kind, file_id = await db.setting("info_type"), await db.setting("info_file_id")
         caption = await db.setting("info_caption")
         markup = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Kanalimiz", url=CHANNEL_URL)],
-            [InlineKeyboardButton(text="Bosh menyu", callback_data="umenu:home")]])
+            [InlineKeyboardButton(text="Orqaga", callback_data="umenu:home")]])
         if kind == "photo" and file_id:
-            return await c.message.answer_photo(file_id, caption=caption or None, reply_markup=markup, protect_content=True)
+            await delete_quietly(c.message)
+            msg = await c.message.answer_photo(file_id, caption=caption or None, reply_markup=markup, protect_content=True)
+            await state.update_data(ui_message_id=msg.message_id, ui_chat_id=msg.chat.id)
+            return msg
         if kind == "video" and file_id:
-            return await c.message.answer_video(file_id, caption=caption or None, reply_markup=markup, protect_content=True)
-        return await c.message.answer(caption or await db.setting("bot_info") or
-                                       "Bot haqida ma’lumot hozircha kiritilmagan.", reply_markup=markup)
+            await delete_quietly(c.message)
+            msg = await c.message.answer_video(file_id, caption=caption or None, reply_markup=markup, protect_content=True)
+            await state.update_data(ui_message_id=msg.message_id, ui_chat_id=msg.chat.id)
+            return msg
+        return await replace_menu_message(c.message, caption or await db.setting("bot_info") or
+                                           "Bot haqida ma’lumot hozircha kiritilmagan.", markup)
     if key == "help":
         u = await db.user(c.from_user.id)
         if not (u and u["blocked"]) and not await subscribed(bot, db, c.from_user.id):
-            return await ask_sub(c.message, db)
+            prompt = await ask_sub(c.message, db)
+            if prompt:
+                await state.update_data(ui_message_id=prompt.message_id, ui_chat_id=prompt.chat.id)
+            return prompt
         url = (await db.setting("admin_link") or "").strip()
         if url.startswith("@"):
             url = "https://t.me/" + url[1:]
@@ -392,10 +471,11 @@ async def user_inline_menu(c: types.CallbackQuery, db: Database, bot: Bot, state
         rows = []
         if url.startswith(("https://", "http://", "tg://")):
             rows.append([InlineKeyboardButton(text="Bog‘lanish", url=url)])
-        rows.append([InlineKeyboardButton(text="Bosh menyu", callback_data="umenu:home")])
-        return await c.message.answer(
+        rows.append([InlineKeyboardButton(text="Orqaga", callback_data="umenu:home")])
+        return await replace_menu_message(
+            c.message,
             "Agar sizda muammolar yoki qanaqadur savollar paydo bo‘lgan bo‘lsa admin bilan bog‘lanishingiz mumkin",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+            InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 # Menyu tugmalari holatdan (state) qat’i nazar ishlaydi — shuning uchun TopUp holatlaridan OLDIN ro‘yxatdan o‘tadi.
@@ -416,7 +496,7 @@ async def about(m: types.Message, db: Database, bot: Bot, state: FSMContext):
     caption = await db.setting("info_caption")
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Kanalimiz", url=CHANNEL_URL)],
-        [InlineKeyboardButton(text="Bosh menyu", callback_data="umenu:home")]])
+        [InlineKeyboardButton(text="Orqaga", callback_data="umenu:home")]])
     if kind == "photo" and file_id:
         await m.answer_photo(file_id, caption=caption or None, reply_markup=kb, protect_content=True)
     elif kind == "video" and file_id:
@@ -441,7 +521,7 @@ async def help_(m: types.Message, db: Database, bot: Bot, state: FSMContext):
     if url.startswith(("https://", "http://", "tg://")):
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Bog‘lanish", url=url)],
-            [InlineKeyboardButton(text="Bosh menyu", callback_data="umenu:home")]])
+            [InlineKeyboardButton(text="Orqaga", callback_data="umenu:home")]])
     await m.answer("Agar sizda muammolar yoki qanaqadur savollar paydo bo‘lgan bo‘lsa admin bilan bog‘lanishingiz mumkin",
                    reply_markup=kb)
 
@@ -452,6 +532,7 @@ async def topup(call: types.CallbackQuery, state: FSMContext, db: Database, bot:
     if not await guard_call(call, db, bot):
         return
     await state.clear()
+    await state.update_data(ui_message_id=call.message.message_id, ui_chat_id=call.message.chat.id)
     await state.set_state(TopUp.amount)
     await show_prompt(call.message, state, "To‘ldirmoqchi bo‘lgan summangizni yozing! Masalan: 10000",
                       back_kb("topupback"))
@@ -459,9 +540,10 @@ async def topup(call: types.CallbackQuery, state: FSMContext, db: Database, bot:
 
 
 @router.callback_query(F.data == "topupback")
-async def topup_back(call: types.CallbackQuery, state: FSMContext):
+async def topup_back(call: types.CallbackQuery, state: FSMContext, db: Database):
     await state.clear()
-    await delete_quietly(call.message)
+    await state.update_data(ui_message_id=call.message.message_id, ui_chat_id=call.message.chat.id)
+    await send_cabinet(call.message, call.from_user.id, db, edit=True)
     await call.answer()
 
 
@@ -470,13 +552,13 @@ async def topup_amount(m: types.Message, state: FSMContext, db: Database):
     try:
         amount = int((m.text or "").replace(" ", "").replace(",", ""))
     except ValueError:
-        return await m.answer("Summani raqam bilan kiriting.")
+        return await show_prompt(m, state, "Summani raqam bilan kiriting.", back_kb("topupback"))
     if amount < MIN_TOPUP:
-        return await m.answer(f"Eng kam to‘ldirish summasi {money(MIN_TOPUP)} so‘m. "
-                              "Iltimos, bundan kam bo‘lmagan summa kiriting.")
+        return await show_prompt(m, state, f"Eng kam to‘ldirish summasi {money(MIN_TOPUP)} so‘m. "
+                                 "Iltimos, bundan kam bo‘lmagan summa kiriting.", back_kb("topupback"))
     if amount > MAX_TOPUP:
-        return await m.answer(f"Eng ko‘p to‘ldirish summasi {money(MAX_TOPUP)} so‘m. "
-                              "Iltimos, kamroq summa kiriting.")
+        return await show_prompt(m, state, f"Eng ko‘p to‘ldirish summasi {money(MAX_TOPUP)} so‘m. "
+                                 "Iltimos, kamroq summa kiriting.", back_kb("topupback"))
     await state.update_data(amount=amount)
     await state.set_state(TopUp.receipt)
     card = await db.setting("card")
@@ -494,8 +576,8 @@ async def receipt(m: types.Message, state: FSMContext, db: Database, bot: Bot):
         await state.clear()
         return await m.answer("Seans tugagan. Kabinet orqali qaytadan boshlang.")
     if await db.pending_count(m.from_user.id) >= MAX_PENDING_TOPUPS:
-        return await m.answer("Sizda ko‘rib chiqilayotgan to‘lovlar juda ko‘p. "
-                              "Iltimos, admin ularni tasdiqlashini kuting.")
+        return await show_prompt(m, state, "Sizda ko‘rib chiqilayotgan to‘lovlar juda ko‘p. "
+                                 "Iltimos, admin ularni tasdiqlashini kuting.", back_kb("topupback"))
     photo = m.photo[-1]
     duplicate = await db.receipt_seen(photo.file_unique_id)
     rid = await db.create_topup(m.from_user.id, amount, photo.file_id, photo.file_unique_id)
@@ -512,12 +594,14 @@ async def receipt(m: types.Message, state: FSMContext, db: Database, bot: Bot):
             a, photo.file_id, caption=caption, reply_markup=kb, protect_content=True))
     await delete_quietly(m)
     await finish_prompt(m, state, "To‘lov chekingiz adminga yuborildi.\n"
-                                  f"Admin to‘lovni tasdiqlaganidan so‘ng, {money(amount)} so‘m hisobingizga qo‘shiladi.")
+                                  f"Admin to‘lovni tasdiqlaganidan so‘ng, {money(amount)} so‘m hisobingizga qo‘shiladi.",
+                        back_kb("umenu:cabinet"))
 
 
 @router.message(TopUp.receipt)
-async def receipt_wrong_type(m: types.Message):
-    await m.answer("Iltimos, to‘lov chekini rasm (skrinshot) ko‘rinishida yuboring.")
+async def receipt_wrong_type(m: types.Message, state: FSMContext):
+    await show_prompt(m, state, "Iltimos, to‘lov chekini rasm (skrinshot) ko‘rinishida yuboring.",
+                      back_kb("topupback"))
 
 
 # ------------------------------------------------------------------------ VIP
@@ -526,7 +610,10 @@ async def vipmenu(call: types.CallbackQuery, db: Database, bot: Bot, state: FSMC
     if not await guard_call(call, db, bot):
         return
     await state.clear()
-    await call.message.answer("VIP tarifini tanlang:", reply_markup=rows_kb(await tariff_rows(db)))
+    await state.update_data(ui_message_id=call.message.message_id, ui_chat_id=call.message.chat.id)
+    rows = await tariff_rows(db)
+    rows.append(("Orqaga", "vipback_cabinet"))
+    await call.message.edit_text("VIP tarifini tanlang:", reply_markup=rows_kb(rows))
     await call.answer()
 
 
@@ -535,7 +622,15 @@ async def vip_notice_click(call: types.CallbackQuery, db: Database, bot: Bot):
     """«VIP olish» tugmasi (tugash haqidagi eslatmada): eslatma xabarining o‘zi tariflar ro‘yxatiga aylanadi."""
     if not await guard_call(call, db, bot):
         return
-    await call.message.edit_text("VIP tarifini tanlang:", reply_markup=rows_kb(await tariff_rows(db)))
+    rows = await tariff_rows(db)
+    rows.append(("Orqaga", "umenu:home"))
+    await call.message.edit_text("VIP tarifini tanlang:", reply_markup=rows_kb(rows))
+    await call.answer()
+
+
+@router.callback_query(F.data == "vipback_cabinet")
+async def vip_back_cabinet(call: types.CallbackQuery, db: Database):
+    await send_cabinet(call.message, call.from_user.id, db, edit=True)
     await call.answer()
 
 
@@ -563,7 +658,9 @@ async def vipbuy(call: types.CallbackQuery, db: Database, bot: Bot):
 
 @router.callback_query(F.data == "vipcancel")
 async def vipcancel(call: types.CallbackQuery, db: Database):
-    await call.message.edit_text("VIP tarifini tanlang:", reply_markup=rows_kb(await tariff_rows(db)))
+    rows = await tariff_rows(db)
+    rows.append(("Orqaga", "vipback_cabinet"))
+    await call.message.edit_text("VIP tarifini tanlang:", reply_markup=rows_kb(rows))
     await call.answer()
 
 
@@ -578,7 +675,8 @@ async def vipconfirm(call: types.CallbackQuery, db: Database, bot: Bot):
     expiry = await db.purchase_vip(call.from_user.id, days, price)
     if not expiry:
         return await call.answer("Balans yetarli emas yoki xarid amalga oshmadi.", show_alert=True)
-    await call.message.edit_text(f"VIP obunangiz faollashtirildi.\nAmal qilish muddati: {fmt_local(expiry)}")
+    await call.message.edit_text(f"VIP obunangiz faollashtirildi.\nAmal qilish muddati: {fmt_local(expiry)}",
+                                 reply_markup=back_kb("umenu:cabinet"))
     await call.answer()
 
 
@@ -589,8 +687,9 @@ async def _send_ref_link(target, uid, bot, db, edit=False):
     await send(
         f"Sizning shaxsiy referal havolangiz:\n{link}\n\nUshbu havolani ishonchli do‘stlaringizga yuboring. "
         f"Ular havola orqali botga kirib start bossa, hisobingizga {await db.setting('referral_bonus')} so‘m qo‘shiladi.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="Havolani nusxalash", copy_text=types.CopyTextButton(text=link))]]))
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Havolani nusxalash", copy_text=types.CopyTextButton(text=link))],
+            [InlineKeyboardButton(text="Orqaga", callback_data="umenu:cabinet")]]))
 
 
 @router.callback_query(F.data == "referral")
@@ -598,11 +697,12 @@ async def referral(call: types.CallbackQuery, db: Database, bot: Bot, state: FSM
     if not await guard_call(call, db, bot, sub_alert="Avval majburiy kanallarga obuna bo‘ling."):
         return
     await state.clear()
+    await state.update_data(ui_message_id=call.message.message_id, ui_chat_id=call.message.chat.id)
     u = await db.user(call.from_user.id)
     if not u["rules_accepted"]:
-        await call.message.answer(REF_INTRO, reply_markup=rows_kb([("Qoidalar", "ref_rules")]))
+        await call.message.edit_text(REF_INTRO, reply_markup=rows_kb([("Qoidalar", "ref_rules"), ("Orqaga", "umenu:cabinet")]))
     else:
-        await _send_ref_link(call.message, call.from_user.id, bot, db)
+        await _send_ref_link(call.message, call.from_user.id, bot, db, edit=True)
     await call.answer()
 
 
@@ -610,7 +710,16 @@ async def referral(call: types.CallbackQuery, db: Database, bot: Bot, state: FSM
 async def ref_rules(call: types.CallbackQuery, db: Database, bot: Bot):
     if not await guard_call(call, db, bot, need_sub=False):
         return
-    await call.message.edit_text(REF_RULES, reply_markup=confirm_kb("refaccept", "refdecline"))
+    await call.message.edit_text(REF_RULES, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Ha", callback_data="refaccept"),
+         InlineKeyboardButton(text="Yo‘q", callback_data="refdecline")],
+        [InlineKeyboardButton(text="Orqaga", callback_data="refback")]]))
+    await call.answer()
+
+
+@router.callback_query(F.data == "refback")
+async def ref_back(call: types.CallbackQuery):
+    await call.message.edit_text(REF_INTRO, reply_markup=rows_kb([("Qoidalar", "ref_rules"), ("Orqaga", "umenu:cabinet")]))
     await call.answer()
 
 
@@ -625,8 +734,7 @@ async def refaccept(call: types.CallbackQuery, db: Database, bot: Bot):
 
 @router.callback_query(F.data == "refdecline")
 async def refdecline(call: types.CallbackQuery, db: Database):
-    await delete_quietly(call.message)
-    await send_cabinet(call.message, call.from_user.id, db)
+    await send_cabinet(call.message, call.from_user.id, db, edit=True)
     await call.answer()
 
 

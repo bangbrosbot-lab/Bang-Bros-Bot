@@ -1,6 +1,6 @@
 from aiogram.filters import BaseFilter
 
-from config import ADMIN_ID
+from config import is_owner
 from db import Database
 
 PERMISSIONS = {
@@ -17,7 +17,7 @@ def no_perm_text(permission: str) -> str:
 
 
 def has_permission(db: Database, uid: int, permission: str) -> bool:
-    if uid == ADMIN_ID:
+    if is_owner(uid):
         return True
     perms = db.admin_permissions(uid)
     return perms is not None and permission in perms
@@ -26,4 +26,4 @@ def has_permission(db: Database, uid: int, permission: str) -> bool:
 class AdminOnly(BaseFilter):
     async def __call__(self, event, db: Database) -> bool:
         user = getattr(event, "from_user", None)
-        return bool(user and (user.id == ADMIN_ID or db.is_admin(user.id)))
+        return bool(user and (is_owner(user.id) or db.is_admin(user.id)))

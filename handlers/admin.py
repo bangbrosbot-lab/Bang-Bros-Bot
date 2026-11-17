@@ -12,7 +12,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 import keyboards as kb
 from access import invalidate_sub_cache
 from backup import send_backup
-from config import ADMIN_ID, CHANNEL_URL
+from config import CHANNEL_URL, is_owner
 from db import Database
 from handlers import ads
 from handlers.filters import PERMISSIONS, AdminOnly, has_permission, no_perm_text
@@ -34,7 +34,12 @@ ALREADY = "Bu so‘rov avval ko‘rib chiqilgan."
 
 
 async def require(event, db: Database, permission: str, alert: bool = False) -> bool:
-    if has_permission(db, event.from_user.id, permission):
+    # Menyu callbackidan chaqirilgan funksiyaga c.message (bot yuborgan xabar) uzatiladi.
+    # Bunday xabarda from_user botning ID si bo‘ladi; haqiqiy admin ID si esa private chat ID.
+    actor_id = event.from_user.id
+    if getattr(event.from_user, "is_bot", False) and getattr(event, "chat", None):
+        actor_id = event.chat.id
+    if has_permission(db, actor_id, permission):
         return True
     if alert:
         await event.answer(no_perm_text(permission), show_alert=True)
@@ -65,12 +70,13 @@ async def show_stats(m, state, db):
     s = await db.stats()
     await m.edit_text(f"Jami Foydalanuvchilar: {s['users']}\nBugun qo‘shilganlar: {s['today']}\n"
                    f"Vip Foydalanuvchilar: {s['vip']}\nReferral orqali kelganlar: {s['ref']}\n"
-                   f"Jami tushgan mablag‘: {money(s['money'])} so‘m\nJami qo‘shilgan videolar: {s['videos']}")
+                   f"Jami tushgan mablag‘: {money(s['money'])} so‘m\nJami qo‘shilgan videolar: {s['videos']}",
+                   reply_markup=kb.back_kb("amenu:home"))
 
 
 def channels_kb():
     return kb.rows_kb([("Majburiy kanal qo‘shish", "add_mand"), ("Maxsus kanal qo‘shish", "add_special"),
-                       ("Kanal o‘chirish", "del_channel")])
+                       ("Kanal o‘chirish", "del_channel"), ("Orqaga", "amenu:settings")])
 
 
 async def open_channels(m, state, db):
@@ -81,19 +87,20 @@ async def open_users(m, state, db):
     if not await require(m, db, "users"):
         return
     await state.set_state(UserAdmin.user_id)
-    await show_prompt(m, state, "Boshqarish uchun foydalanuvchi ID sini yuboring:")
+    await show_prompt(m, state, "Boshqarish uchun foydalanuvchi ID sini yuboring:", kb.back_kb("amenu:settings"))
 
 
 async def edit_card(m, state, db):
     if not await require(m, db, "edit"):
         return
     await state.set_state(Settings.card)
-    await show_prompt(m, state, f"Hozirgi karta: {await db.setting('card')}\nYangi karta raqamini yuboring!")
+    await show_prompt(m, state, f"Hozirgi karta: {await db.setting('card')}\nYangi karta raqamini yuboring!", kb.back_kb("amenu:settings"))
 
 
 async def vip_tariff_markup(db):
     rows = [(f"{label}: {money(int(await db.setting(f'vip_{d}')))} so‘m", f"vipprice:{d}")
             for d, label in [(1, "1 kunlik"), (7, "1 haftalik"), (30, "1 oylik")]]
+    rows.append(("Orqaga", "amenu:settings"))
     return kb.rows_kb(rows)
 
 
@@ -107,31 +114,31 @@ async def edit_info(m, state, db):
     if not await require(m, db, "edit"):
         return
     await state.set_state(Settings.info)
-    await show_prompt(m, state, f"Hozirgi ma’lumot:\n{await db.setting('bot_info')}\n\nRasm va matn yoki video va matn yuboring!")
+    await show_prompt(m, state, f"Hozirgi ma’lumot:\n{await db.setting('bot_info')}\n\nRasm va matn yoki video va matn yuboring!", kb.back_kb("amenu:settings"))
 
 
 async def edit_referral(m, state, db):
     if not await require(m, db, "edit"):
         return
     await state.set_state(Settings.referral)
-    await show_prompt(m, state, f"Hozirgi referral bonusi: {await db.setting('referral_bonus')} so‘m. Yangi miqdorni yuboring!")
+    await show_prompt(m, state, f"Hozirgi referral bonusi: {await db.setting('referral_bonus')} so‘m. Yangi miqdorni yuboring!", kb.back_kb("amenu:settings"))
 
 
 async def edit_admin_link(m, state, db):
     if not await require(m, db, "edit"):
         return
     await state.set_state(Settings.admin_link)
-    await show_prompt(m, state, f"Hozirgi admin havolasi: {await db.setting('admin_link')}\nYangisini yuboring!")
+    await show_prompt(m, state, f"Hozirgi admin havolasi: {await db.setting('admin_link')}\nYangisini yuboring!", kb.back_kb("amenu:settings"))
 
 
 async def start_add_video(m, state, db):
     await state.set_state(AddVideo.cover)
-    await show_prompt(m, state, "Post uchun rasm jo‘nating!")
+    await show_prompt(m, state, "Post uchun rasm jo‘nating!", kb.back_kb("amenu:desk"))
 
 
 async def start_delete_video(m, state, db):
     await state.set_state(DeleteVideo.link)
-    await show_prompt(m, state, "O‘chirmoqchi bo‘lgan videoning havolasini yuboring!")
+    await show_prompt(m, state, "O‘chirmoqchi bo‘lgan videoning havolasini yuboring!", kb.back_kb("amenu:desk"))
 
 
 MENU_ACTIONS = {
@@ -147,7 +154,7 @@ MENU_ACTIONS = {
 @menu_router.callback_query(F.data.startswith("amenu:"))
 async def on_menu(c: types.CallbackQuery, state: FSMContext, db: Database):
     """Inline menyu: eski jarayonni to‘xtatib, bitta boshqaruv xabarida yangi bo‘limni ochadi."""
-    if c.from_user.id != ADMIN_ID and not db.is_admin(c.from_user.id):
+    if not is_owner(c.from_user.id) and not db.is_admin(c.from_user.id):
         return await c.answer(DENIED, show_alert=True)
     key = c.data.split(":", 1)[1]
     actions = {
@@ -160,10 +167,16 @@ async def on_menu(c: types.CallbackQuery, state: FSMContext, db: Database):
     action = actions.get(key)
     if not action:
         return await c.answer()
-    if key == "channels" and c.from_user.id != ADMIN_ID:
+    if key == "channels" and not is_owner(c.from_user.id):
         return await c.answer(DENIED, show_alert=True)
+    if key in ("addvideo", "delvideo", "broadcast", "gift") and not has_permission(db, c.from_user.id, "edit"):
+        return await c.answer(no_perm_text("edit"), show_alert=True)
+    old = await state.get_data()
+    if old.get("source_chat") and old.get("source_message"):
+        await safe_call(lambda: c.bot.delete_message(old["source_chat"], old["source_message"]))
     await state.clear()
-    await state.update_data(prompt_id=c.message.message_id, prompt_chat_id=c.message.chat.id)
+    await state.update_data(prompt_id=c.message.message_id, prompt_chat_id=c.message.chat.id,
+                            ui_message_id=c.message.message_id, ui_chat_id=c.message.chat.id)
     await c.answer()
     await action(c.message, state, db)
 
@@ -171,7 +184,7 @@ async def on_menu(c: types.CallbackQuery, state: FSMContext, db: Database):
 # ===================================================================== /data, /id
 @router.message(Command("data"))
 async def data_cmd(m: types.Message, bot: Bot, db: Database):
-    if m.from_user.id != ADMIN_ID:
+    if not is_owner(m.from_user.id):
         return
     await send_backup(bot, db, m.chat.id)
 
@@ -243,6 +256,7 @@ def quality_kb(remaining, with_done=False):
             for i in range(0, len(remaining), 2)]
     if with_done:
         rows.append([InlineKeyboardButton(text="Bo‘ldi", callback_data="addq:done")])
+    rows.append([InlineKeyboardButton(text="Orqaga", callback_data="amenu:desk")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -251,25 +265,25 @@ async def add_cover(m: types.Message, state: FSMContext):
     await state.update_data(cover=m.photo[-1].file_id)
     await state.set_state(AddVideo.caption)
     await delete_quietly(m)
-    await show_prompt(m, state, "Izoh yozing!")
+    await show_prompt(m, state, "Izoh yozing!", kb.back_kb("amenu:desk"))
 
 
 @router.message(AddVideo.cover)
-async def add_cover_wrong(m: types.Message):
-    await m.answer("Iltimos, post uchun rasm yuboring!")
+async def add_cover_wrong(m: types.Message, state: FSMContext):
+    await show_prompt(m, state, "Iltimos, post uchun rasm yuboring!", kb.back_kb("amenu:desk"))
 
 
 @router.message(AddVideo.caption)
 async def add_caption(m: types.Message, state: FSMContext):
     text = m.text or m.caption
     if not text:
-        return await m.answer("Izohni matn ko‘rinishida yuboring!")
+        return await show_prompt(m, state, "Izohni matn ko‘rinishida yuboring!", kb.back_kb("amenu:desk"))
     if len(text) > 900:
-        return await m.answer("Izoh 900 belgidan oshmasligi kerak. Qisqaroq izoh yuboring!")
+        return await show_prompt(m, state, "Izoh 900 belgidan oshmasligi kerak. Qisqaroq izoh yuboring!", kb.back_kb("amenu:desk"))
     await state.update_data(caption=text)
     await state.set_state(AddVideo.teaser)
     await delete_quietly(m)
-    await show_prompt(m, state, "Qisqa videoni jo‘nating!")
+    await show_prompt(m, state, "Qisqa videoni jo‘nating!", kb.back_kb("amenu:desk"))
 
 
 @router.message(AddVideo.teaser, F.video)
@@ -280,13 +294,14 @@ async def add_teaser(m: types.Message, state: FSMContext):
     kbd = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=q, callback_data=f"addq:{q}") for q in ("360p", "480p")],
         [InlineKeyboardButton(text=q, callback_data=f"addq:{q}") for q in ("720p", "1080p")]])
-    await show_prompt(m, state, "Birinchi sifatni tanlang:", kbd)
+    await show_prompt(m, state, "Birinchi sifatni tanlang:", InlineKeyboardMarkup(inline_keyboard=kbd.inline_keyboard + [[InlineKeyboardButton(text="Orqaga", callback_data="amenu:desk")]]))
 
 
 @router.message(AddVideo.teaser, ~F.video)
 @router.message(AddVideo.quality_file, ~F.video)
-async def add_video_wrong(m: types.Message):
-    await m.answer("Iltimos, videoni fayl emas, oddiy video ko‘rinishida yuboring!")
+async def add_video_wrong(m: types.Message, state: FSMContext):
+    await show_prompt(m, state, "Iltimos, videoni fayl emas, oddiy video ko‘rinishida yuboring!",
+                      kb.back_kb("addqback"))
 
 
 @router.callback_query(F.data.startswith("addq:") & (F.data != "addq:done"))
@@ -328,14 +343,18 @@ async def add_done(c: types.CallbackQuery, state: FSMContext):
         return await c.answer("Kamida bitta sifat qo‘shing.", show_alert=True)
     await state.set_state(AddVideo.finish)
     await show_prompt(c.message, state, "Barcha sifatlar muvaffaqiyatli qo‘shildi. Hammasi tayyormi?",
-                      kb.confirm_kb("video_save", "video_cancel"))
+                      InlineKeyboardMarkup(inline_keyboard=[
+                          [InlineKeyboardButton(text="Ha", callback_data="video_save"),
+                           InlineKeyboardButton(text="Yo‘q", callback_data="video_cancel")],
+                          [InlineKeyboardButton(text="Orqaga", callback_data="amenu:desk")]]))
     await c.answer()
 
 
 @router.callback_query(F.data == "video_cancel")
 async def video_cancel(c: types.CallbackQuery, state: FSMContext):
     await state.clear()
-    await state.update_data(prompt_id=c.message.message_id, prompt_chat_id=c.message.chat.id)
+    await state.update_data(prompt_id=c.message.message_id, prompt_chat_id=c.message.chat.id,
+                            ui_message_id=c.message.message_id, ui_chat_id=c.message.chat.id)
     await state.set_state(AddVideo.cover)
     await c.message.edit_text("Yangi video qo‘shish boshlandi. Post uchun rasm jo‘nating!")
     await c.answer()
@@ -356,8 +375,8 @@ async def video_save(c: types.CallbackQuery, state: FSMContext, db: Database, bo
     caption = (f"{esc(d['caption'])}\n\nYoqimli tomosha tilaymiz! Kanalimizdan uzoqlashmang: "
                f'<a href="{esc(CHANNEL_URL)}">Bang Bros</a>')
     markup = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Yoqdi (0)", callback_data=f"vote:{vid}:1"),
-         InlineKeyboardButton(text="Yoqmadi (0)", callback_data=f"vote:{vid}:-1")],
+        [InlineKeyboardButton(text="Yoqdi", callback_data=f"vote:{vid}:1"),
+         InlineKeyboardButton(text="Yoqmadi", callback_data=f"vote:{vid}:-1")],
         [InlineKeyboardButton(text="Videoni ko‘rish", url=f"https://t.me/{me.username}?start=video_{vid}")]])
     try:
         post = await bot.send_photo(channel, d["cover"], caption=caption, parse_mode="HTML",
@@ -368,6 +387,7 @@ async def video_save(c: types.CallbackQuery, state: FSMContext, db: Database, bo
         await state.set_state(AddVideo.finish)
         return await c.answer(f"Kanalga post yuborilmadi: {e}", show_alert=True)
     await db.set_channel_message(vid, post.message_id)
+    await state.update_data(ui_message_id=c.message.message_id, ui_chat_id=c.message.chat.id)
     await c.message.edit_text("Video muvaffaqiyatli qo‘shildi.", reply_markup=kb.desk())
     await c.answer()
 
@@ -390,13 +410,15 @@ async def delete_link(m: types.Message, state: FSMContext, db: Database):
     await delete_quietly(m)
     if not vid:
         return await finish_prompt(m, state, "Video havolasi noto‘g‘ri yoki bu post bazadan topilmadi. "
-                                             "Video o‘chirish bekor qilindi.")
+                                             "Video o‘chirish bekor qilindi.", kb.desk())
     if not await db.video(vid):
-        return await finish_prompt(m, state, "Video topilmadi.")
+        return await finish_prompt(m, state, "Video topilmadi.", kb.desk())
     await state.update_data(delete_vid=vid)
     await state.set_state(DeleteVideo.confirm)
     await show_prompt(m, state, f"Video №{vid} butunlay o‘chiriladi (kanaldagi post ham). Tasdiqlaysizmi?",
-                      kb.confirm_kb("delvid:yes", "delvid:no"))
+                      InlineKeyboardMarkup(inline_keyboard=[
+                          [InlineKeyboardButton(text="Ha", callback_data="delvid:yes"),
+                           InlineKeyboardButton(text="Orqaga", callback_data="delvid:no")]]))
 
 
 @router.callback_query(F.data.startswith("delvid:"))
@@ -404,13 +426,13 @@ async def delete_confirm(c: types.CallbackQuery, state: FSMContext, db: Database
     d = await state.get_data()
     vid = d.get("delete_vid")
     if c.data.endswith("no") or not vid:
-        await finish_prompt(c.message, state, "Video o‘chirish bekor qilindi.")
+        await finish_prompt(c.message, state, "Video o‘chirish bekor qilindi.", kb.desk())
         return await c.answer()
     v = await db.video(vid)
     if v and v["channel_id"] and v["channel_message_id"]:
         await safe_call(lambda: bot.delete_message(v["channel_id"], v["channel_message_id"]))
     await db.delete_video(vid)
-    await finish_prompt(c.message, state, "Video o‘chirildi.")
+    await finish_prompt(c.message, state, "Video o‘chirildi.", kb.desk())
     await c.answer()
 
 
@@ -420,10 +442,10 @@ async def card_save(m: types.Message, state: FSMContext, db: Database):
     if not await require(m, db, "edit"):
         return
     if not m.text:
-        return await m.answer("Karta raqamini matn ko‘rinishida yuboring!")
+        return await show_prompt(m, state, "Karta raqamini matn ko‘rinishida yuboring!", kb.back_kb("amenu:settings"))
     await db.set_setting("card", m.text.strip())
     await delete_quietly(m)
-    await finish_prompt(m, state, "Karta raqami yangilandi.")
+    await finish_prompt(m, state, "Karta raqami yangilandi.", kb.settings())
 
 
 @router.message(Settings.info)
@@ -440,9 +462,9 @@ async def info_save(m: types.Message, state: FSMContext, db: Database):
         await db.set_setting("info_caption", m.text)
         await db.set_setting("bot_info", m.text)
     else:
-        return await m.answer("Rasm va matn yoki video va matn yuboring.")
+        return await show_prompt(m, state, "Rasm va matn yoki video va matn yuboring!", kb.back_kb("amenu:settings"))
     await delete_quietly(m)
-    await finish_prompt(m, state, "Bot ma’lumoti yangilandi.")
+    await finish_prompt(m, state, "Bot ma’lumoti yangilandi.", kb.settings())
 
 
 @router.message(Settings.referral)
@@ -452,12 +474,12 @@ async def ref_save(m: types.Message, state: FSMContext, db: Database):
     try:
         n = int((m.text or "").strip())
     except ValueError:
-        return await m.answer("Faqat raqam yuboring.")
+        return await show_prompt(m, state, "Faqat raqam yuboring.", kb.back_kb("amenu:settings"))
     if n < 0:
-        return await m.answer("Bonus manfiy bo‘lishi mumkin emas.")
+        return await show_prompt(m, state, "Bonus manfiy bo‘lishi mumkin emas.", kb.back_kb("amenu:settings"))
     await db.set_setting("referral_bonus", n)
     await delete_quietly(m)
-    await finish_prompt(m, state, "Referral bonusi yangilandi.")
+    await finish_prompt(m, state, "Referral bonusi yangilandi.", kb.settings())
 
 
 @router.message(Settings.admin_link)
@@ -465,10 +487,10 @@ async def link_save(m: types.Message, state: FSMContext, db: Database):
     if not await require(m, db, "edit"):
         return
     if not m.text:
-        return await m.answer("Havolani matn ko‘rinishida yuboring!")
+        return await show_prompt(m, state, "Havolani matn ko‘rinishida yuboring!", kb.back_kb("amenu:settings"))
     await db.set_setting("admin_link", m.text.strip())
     await delete_quietly(m)
-    await finish_prompt(m, state, "Admin havolasi yangilandi.")
+    await finish_prompt(m, state, "Admin havolasi yangilandi.", kb.settings())
 
 
 @router.callback_query(F.data.startswith("vipprice:"))
@@ -479,7 +501,8 @@ async def vipprice_choose(c: types.CallbackQuery, state: FSMContext, db: Databas
     if days not in (1, 7, 30):
         return await c.answer()
     await state.clear()
-    await state.update_data(vip_days=days, prompt_id=c.message.message_id, prompt_chat_id=c.message.chat.id)
+    await state.update_data(vip_days=days, prompt_id=c.message.message_id, prompt_chat_id=c.message.chat.id,
+                            ui_message_id=c.message.message_id, ui_chat_id=c.message.chat.id)
     await state.set_state(Settings.vip_price)
     await show_prompt(c.message, state, "Yangi narxni so‘mda yuboring:", kb.back_kb("vipback"))
     await c.answer()
@@ -488,6 +511,7 @@ async def vipprice_choose(c: types.CallbackQuery, state: FSMContext, db: Databas
 @router.callback_query(F.data == "vipback")
 async def vipprice_back(c: types.CallbackQuery, state: FSMContext, db: Database):
     await state.clear()
+    await state.update_data(ui_message_id=c.message.message_id, ui_chat_id=c.message.chat.id)
     await c.message.edit_text("O‘zgartirmoqchi bo‘lgan VIP tarifini tanlang:", reply_markup=await vip_tariff_markup(db))
     await c.answer()
 
@@ -501,19 +525,18 @@ async def vipprice_save(m: types.Message, state: FSMContext, db: Database):
         if n <= 0:
             raise ValueError
     except ValueError:
-        return await m.answer("Narxni musbat raqam bilan yuboring.")
+        return await show_prompt(m, state, "Narxni musbat raqam bilan yuboring!", kb.back_kb("vipback"))
     days = (await state.get_data()).get("vip_days")
     if days not in (1, 7, 30):
-        await state.clear()
-        return await m.answer("Seans tugagan. «VIP edit» orqali qaytadan boshlang.")
+        return await show_prompt(m, state, "Seans tugagan. «VIP edit» orqali qaytadan boshlang.", kb.settings())
     await db.set_setting(f"vip_{days}", n)
     await delete_quietly(m)
-    await finish_prompt(m, state, "VIP tarifi yangilandi.")
+    await finish_prompt(m, state, "VIP tarifi yangilandi.", kb.settings())
 
 
 # ===================================================================== KANALLAR (faqat bosh admin)
 async def _main_only(c: types.CallbackQuery) -> bool:
-    if c.from_user.id != ADMIN_ID:
+    if not is_owner(c.from_user.id):
         await c.answer(DENIED, show_alert=True)
         return False
     return True
@@ -524,7 +547,8 @@ async def add_mand(c: types.CallbackQuery, state: FSMContext):
     if not await _main_only(c):
         return
     await state.clear()
-    await state.update_data(prompt_id=c.message.message_id, prompt_chat_id=c.message.chat.id)
+    await state.update_data(prompt_id=c.message.message_id, prompt_chat_id=c.message.chat.id,
+                            ui_message_id=c.message.message_id, ui_chat_id=c.message.chat.id)
     await state.set_state(Settings.mandatory_channel)
     await show_prompt(c.message, state, "Kanal ID sini va qo‘shilish havolasini quyidagi ko‘rinishda yuboring:\n"
                                         "ID | https://t.me/...\nMaxfiy kanal uchun invite link yuboring.",
@@ -534,7 +558,7 @@ async def add_mand(c: types.CallbackQuery, state: FSMContext):
 
 @router.message(Settings.mandatory_channel)
 async def mand_save(m: types.Message, state: FSMContext, db: Database, bot: Bot):
-    if m.from_user.id != ADMIN_ID:
+    if not is_owner(m.from_user.id):
         return
     try:
         raw_id, url = (m.text or "").split("|", 1)
@@ -542,19 +566,19 @@ async def mand_save(m: types.Message, state: FSMContext, db: Database, bot: Bot)
         if not url.startswith(("https://", "http://", "tg://")):
             raise ValueError
     except ValueError:
-        return await m.answer("Format noto‘g‘ri. ID | havola ko‘rinishida yuboring.")
+        return await show_prompt(m, state, "Format noto‘g‘ri. ID | havola ko‘rinishida yuboring.", kb.back_kb("chback"))
     try:
         chat = await bot.get_chat(cid)
         me = await bot.me()
         member = await bot.get_chat_member(cid, me.id)
     except Exception:
-        return await m.answer("Kanal topilmadi yoki bot unga qo‘shilmagan. ID ni tekshiring va botni kanalga admin qiling.")
+        return await show_prompt(m, state, "Kanal topilmadi yoki bot unga qo‘shilmagan. ID ni tekshiring va botni kanalga admin qiling.", kb.back_kb("chback"))
     if member.status not in ("administrator", "creator"):
-        return await m.answer("Bot bu kanalda admin emas. Aks holda obunani tekshira olmaydi — avval botni admin qiling.")
+        return await show_prompt(m, state, "Bot bu kanalda admin emas. Aks holda obunani tekshira olmaydi — avval botni admin qiling.", kb.back_kb("chback"))
     await db.add_channel(cid, "mandatory", url, chat.title or chat.username or str(cid))
     invalidate_sub_cache()
     await delete_quietly(m)
-    await finish_prompt(m, state, "Majburiy kanal qo‘shildi.")
+    await finish_prompt(m, state, "Majburiy kanal qo‘shildi.", channels_kb())
 
 
 @router.callback_query(F.data == "add_special")
@@ -562,7 +586,8 @@ async def special_start(c: types.CallbackQuery, state: FSMContext):
     if not await _main_only(c):
         return
     await state.clear()
-    await state.update_data(prompt_id=c.message.message_id, prompt_chat_id=c.message.chat.id)
+    await state.update_data(prompt_id=c.message.message_id, prompt_chat_id=c.message.chat.id,
+                            ui_message_id=c.message.message_id, ui_chat_id=c.message.chat.id)
     await state.set_state(Settings.special_channel)
     await show_prompt(c.message, state, "Botni kanalga admin qilib tayinlang va kanal ID sini jo‘nating!",
                       kb.back_kb("chback"))
@@ -574,13 +599,14 @@ async def channels_back(c: types.CallbackQuery, state: FSMContext):
     if not await _main_only(c):
         return
     await state.clear()
+    await state.update_data(ui_message_id=c.message.message_id, ui_chat_id=c.message.chat.id)
     await c.message.edit_text("Kanallar bo‘limidasiz.", reply_markup=channels_kb())
     await c.answer()
 
 
 @router.message(Settings.special_channel)
 async def special_save(m: types.Message, state: FSMContext, db: Database, bot: Bot):
-    if m.from_user.id != ADMIN_ID:
+    if not is_owner(m.from_user.id):
         return
     try:
         cid = int((m.text or "").strip())
@@ -588,9 +614,9 @@ async def special_save(m: types.Message, state: FSMContext, db: Database, bot: B
         me = await bot.me()
         member = await bot.get_chat_member(cid, me.id)
     except Exception:
-        return await m.answer("Kanal ID sini tekshiring va botga admin huquqini bering.")
+        return await show_prompt(m, state, "Kanal ID sini tekshiring va botga admin huquqini bering.", kb.back_kb("chback"))
     if member.status != "administrator":
-        return await m.answer("Bot kanalda admin emas. Avval admin qiling.")
+        return await show_prompt(m, state, "Bot kanalda admin emas. Avval admin qiling.", kb.back_kb("chback"))
     url = f"https://t.me/{chat.username}" if chat.username else None
     if not url:
         try:
@@ -599,7 +625,7 @@ async def special_save(m: types.Message, state: FSMContext, db: Database, bot: B
             pass
     await db.set_special_channel(cid, url, chat.title or chat.username or str(cid))
     await delete_quietly(m)
-    await finish_prompt(m, state, "Maxsus kanal qo‘shildi.")
+    await finish_prompt(m, state, "Maxsus kanal qo‘shildi.", channels_kb())
 
 
 @router.callback_query(F.data == "del_channel")
@@ -629,7 +655,9 @@ async def del_channel_ask(c: types.CallbackQuery):
         return
     cid = int(c.data.split(":")[1])
     await c.message.edit_text(f"{cid} kanalini o‘chirishni xohlaysizmi?",
-                              reply_markup=kb.confirm_kb(f"delchyes:{cid}", "delchno"))
+                              reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                  [InlineKeyboardButton(text="Ha", callback_data=f"delchyes:{cid}"),
+                                   InlineKeyboardButton(text="Orqaga", callback_data="delchno")]]))
     await c.answer()
 
 
@@ -639,12 +667,14 @@ async def del_channel_yes(c: types.CallbackQuery, db: Database):
         return
     await db.delete_channel(int(c.data.split(":")[1]))
     invalidate_sub_cache()
-    await c.message.edit_text("Kanal o‘chirildi.")
+    await c.message.edit_text("Kanal o‘chirildi.", reply_markup=channels_kb())
     await c.answer("Kanal o‘chirildi.")
 
 
 @router.callback_query(F.data == "delchno")
 async def del_channel_no(c: types.CallbackQuery):
+    if not await _main_only(c):
+        return
     await c.message.edit_text("Kanallar bo‘limidasiz.", reply_markup=channels_kb())
     await c.answer("Kanal o‘chirish bekor qilindi.")
 
@@ -680,7 +710,7 @@ async def topup_reject(c: types.CallbackQuery, state: FSMContext, db: Database):
         return await c.answer(ALREADY, show_alert=True)
     await state.clear()
     prompt = await c.message.answer("Rad etish sababini yozing!",
-                                    reply_markup=kb.rows_kb([("Bekor qilish", "topupcancel")]))
+                                    reply_markup=kb.rows_kb([("Orqaga", "topupcancel")]))
     await state.update_data(reject_topup_id=rid, reject_chat=c.message.chat.id, reject_msg=c.message.message_id,
                             reject_caption=c.message.caption, prompt_id=prompt.message_id,
                             prompt_chat_id=prompt.chat.id)
@@ -701,17 +731,17 @@ async def topup_reject_reason(m: types.Message, state: FSMContext, db: Database,
         return await state.clear()
     reason = (m.text or "").strip()
     if not reason:
-        return await m.answer("Rad etish sababini matn ko‘rinishida yozing!")
+        return await show_prompt(m, state, "Rad etish sababini matn ko‘rinishida yozing!",
+                                 kb.rows_kb([("Orqaga", "topupcancel")]))
     d = await state.get_data()
     r = await db.reject_topup(d.get("reject_topup_id"), reason)
     if not r:
-        await state.clear()
-        return await m.answer(ALREADY)
+        return await finish_prompt(m, state, ALREADY, kb.back_kb("amenu:home"))
     await safe_call(lambda: bot.send_message(
         r["user_id"], f"To‘lovingiz rad etildi.\nHisobingizga pul qo‘shilmadi.\nSababi: {reason}"))
     await _close_receipt(bot, d["reject_chat"], d["reject_msg"], d.get("reject_caption"),
                          f"❌ Rad etildi ({m.from_user.full_name}): {reason}")
-    await finish_prompt(m, state, "To‘lov rad qilindi.\nSababi foydalanuvchiga yetkazildi.")
+    await finish_prompt(m, state, "To‘lov rad qilindi.\nSababi foydalanuvchiga yetkazildi.", kb.back_kb("amenu:home"))
 
 
 # ===================================================================== FOYDALANUVCHILAR
@@ -722,22 +752,25 @@ async def user_lookup(m: types.Message, state: FSMContext, db: Database):
     try:
         uid = int((m.text or "").strip())
     except ValueError:
-        return await m.answer("ID faqat raqamlardan iborat bo‘lishi kerak.")
+        return await show_prompt(m, state, "ID faqat raqamlardan iborat bo‘lishi kerak.", kb.back_kb("amenu:settings"))
     u = await db.user(uid)
     if not u:
-        return await m.answer("Foydalanuvchi topilmadi.")
+        return await show_prompt(m, state, "Foydalanuvchi topilmadi.", kb.back_kb("amenu:settings"))
     prompt_data = await state.get_data()
     await delete_quietly(m)
     await state.clear()
+    if prompt_data.get("ui_message_id"):
+        await state.update_data(ui_message_id=prompt_data["ui_message_id"],
+                                ui_chat_id=prompt_data.get("ui_chat_id", m.chat.id))
     await show_user(m, db, u, actor_id=m.from_user.id, prompt_data=prompt_data)
 
 
-async def show_user(target, db, u, edit=False, actor_id=None, prompt_data=None):
+async def show_user(target, db, u, edit=False, actor_id=None, prompt_data=None, notice=None):
     uid = u["user_id"]
     vip, friends = await db.vip(uid), await db.referrals_count(uid)
     perms = db.admin_permissions(uid)
     is_admin = perms is not None
-    if uid == ADMIN_ID:
+    if is_owner(uid):
         extra = "Holati: Bosh admin"
     elif is_admin:
         extra = f"Holati: {admin_level(perms)}"
@@ -749,20 +782,22 @@ async def show_user(target, db, u, edit=False, actor_id=None, prompt_data=None):
     balance = int(u["balance"] or 0) + int(u["referral_balance"] or 0)
     text = (f"Foydalanuvchi ma’lumotlari\n\nIsm: {u['name'] or 'Mavjud emas'}\nUsername: {username}\nID: {uid}\n"
             f"Balans: {money(balance)} so‘m\n{extra}\nDo‘stlar: {friends}\n"
-            f"Bloklangan: {'Ha' if u['blocked'] else 'Yo‘q'}")
+            f"Bloklangan: {'Ha' if u['blocked'] else 'Yo‘q'}"
+            + (f"\n\n{notice}" if notice else ""))
     cb = lambda t, d: InlineKeyboardButton(text=t, callback_data=d)  # noqa: E731
     rows = [[cb("Balans qo‘shish", f"uadd:{uid}"), cb("Balans ayirish", f"usub:{uid}")]]
     if vip:
         rows.append([cb("VIP bekor qilish", f"urevoke:{uid}")])
     elif not is_admin:
         rows.append([cb("VIP berish", f"uvip:{uid}")])
-    if uid != ADMIN_ID:
+    if not is_owner(uid):
         rows.append([cb("Blokdan olish" if u["blocked"] else "Blocklash", f"ublock:{uid}")])
         actor_id = actor_id or getattr(getattr(target, "from_user", None), "id", 0)
         if has_permission(db, actor_id, "admin_manage"):
             rows.append([cb("Adminlikdan olish", f"uremoveadmin:{uid}") if is_admin
                          else cb("Admin qilish", f"uadmin:{uid}")])
     rows.append([cb("Xabar yuborish", f"umsg:{uid}")])
+    rows.append([cb("Orqaga", "idhome")])
     markup = InlineKeyboardMarkup(inline_keyboard=rows)
     try:
         if prompt_data and prompt_data.get("prompt_id"):
@@ -786,19 +821,22 @@ async def user_action(c: types.CallbackQuery, state: FSMContext, db: Database):
     key, uid_raw = c.data.split(":", 1)
     action, uid = key[1:], int(uid_raw)
     await state.update_data(target_uid=uid, action=action, prompt_id=c.message.message_id,
-                            prompt_chat_id=c.message.chat.id)
+                            prompt_chat_id=c.message.chat.id, ui_message_id=c.message.message_id,
+                            ui_chat_id=c.message.chat.id)
     if action == "revoke":
         await db.revoke_vip(uid)
         await safe_call(lambda: c.bot.send_message(uid, "VIP obunangiz administrator tomonidan bekor qilindi."))
         await c.answer("VIP bekor qilindi.")
         return await show_user(c.message, db, await db.user(uid), True, c.from_user.id)
     if action == "block":
-        if uid == ADMIN_ID:
+        if is_owner(uid):
             return await c.answer("Bosh adminni bloklab bo‘lmaydi.", show_alert=True)
         u = await db.user(uid)
         verb = "blockdan chiqarmoqchimisiz?" if u["blocked"] else "blocklamoqchimisiz?"
         return await c.message.edit_text(f"Rostdan ham shu foydalanuvchini {verb}",
-                                         reply_markup=kb.confirm_kb(f"ublockconfirm:{uid}:yes", f"ublockconfirm:{uid}:no"))
+                                         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                             [InlineKeyboardButton(text="Ha", callback_data=f"ublockconfirm:{uid}:yes"),
+                                              InlineKeyboardButton(text="Orqaga", callback_data=f"ublockconfirm:{uid}:no")]]))
     if action == "vip":
         await state.set_state(UserAdmin.add_amount)
         rows = [(label, f"uvipdays:{uid}:{days}") for days, label in
@@ -828,6 +866,7 @@ async def user_vip_days(c: types.CallbackQuery, state: FSMContext, db: Database,
     await safe_call(lambda: bot.send_message(
         uid, f"Sizga {days} kunlik VIP obuna berildi. Amal qilish muddati: {fmt_local(expiry)}"))
     await state.clear()
+    await state.update_data(ui_message_id=c.message.message_id, ui_chat_id=c.message.chat.id)
     await c.message.edit_text(f"Foydalanuvchiga {days} kunlik VIP berildi.")
     await show_user(c.message, db, await db.user(uid), True, c.from_user.id)
     await c.answer("VIP berildi.")
@@ -838,6 +877,7 @@ async def user_back(c: types.CallbackQuery, state: FSMContext, db: Database):
     if not await require(c, db, "users", alert=True):
         return
     await state.clear()
+    await state.update_data(ui_message_id=c.message.message_id, ui_chat_id=c.message.chat.id)
     u = await db.user(int(c.data.split(":")[1]))
     if not u:
         return await c.answer("Foydalanuvchi topilmadi.", show_alert=True)
@@ -854,7 +894,7 @@ async def user_block_confirm(c: types.CallbackQuery, db: Database, bot: Bot):
     u = await db.user(uid)
     if not u:
         return await c.answer("Foydalanuvchi topilmadi.", show_alert=True)
-    if answer == "no" or uid == ADMIN_ID:
+    if answer == "no" or is_owner(uid):
         await c.answer("Amal bekor qilindi.")
         return await show_user(c.message, db, u, True, c.from_user.id)
     blocking = not bool(u["blocked"])
@@ -863,11 +903,11 @@ async def user_block_confirm(c: types.CallbackQuery, db: Database, bot: Bot):
         await safe_call(lambda: bot.send_message(
             uid, "Siz botdan butunlay blocklandingiz. Sababini bilmoqchi bo‘lsangiz Yordam bo‘limidan adminga murojaat qiling.",
             reply_markup=kb.blocked_menu()))
-        await c.message.edit_text("Foydalanuvchi bloklandi.")
+        await show_user(c.message, db, await db.user(uid), True, c.from_user.id)
     else:
         await safe_call(lambda: bot.send_message(
             uid, "Siz blockdan ozod etildingiz, endi erkin foydalanishingiz mumkin.", reply_markup=kb.main_menu()))
-        await c.message.edit_text("Foydalanuvchi blockdan chiqarildi.")
+        await show_user(c.message, db, await db.user(uid), True, c.from_user.id)
     await c.answer()
 
 
@@ -882,21 +922,25 @@ async def user_amount(m: types.Message, state: FSMContext, db: Database, bot: Bo
         if n <= 0:
             raise ValueError
     except ValueError:
-        return await m.answer("Musbat raqam yuboring.")
+        return await show_prompt(m, state, "Musbat raqam yuboring!", kb.back_kb(f"uback:{uid}"))
     if action == "vip":
         if n not in (1, 7, 30):
-            return await m.answer("Faqat 1, 7 yoki 30 kun kiriting.")
+            return await show_prompt(m, state, "Faqat 1, 7 yoki 30 kun kiriting!", kb.back_kb(f"uback:{uid}"))
         expiry = await db.set_vip(uid, n)
         await safe_call(lambda: bot.send_message(
             uid, f"Sizga {n} kunlik VIP obuna berildi. Amal qilish muddati: {fmt_local(expiry)}"))
         await delete_quietly(m)
         await state.clear()
+        if d.get("ui_message_id"):
+            await state.update_data(ui_message_id=d["ui_message_id"], ui_chat_id=d.get("ui_chat_id", m.chat.id))
         return await show_user(m, db, await db.user(uid), actor_id=m.from_user.id, prompt_data=d)
     await state.update_data(pending_amount=n)
     await state.set_state(UserAdmin.confirm_balance)
     await delete_quietly(m)
     await show_prompt(m, state, f"Rostdan ham {money(n)} so‘m {'qo‘shilsin' if action == 'add' else 'ayirilsin'}mi?",
-                      kb.confirm_kb("ubalconfirm:yes", "ubalconfirm:no"))
+                      InlineKeyboardMarkup(inline_keyboard=[
+                          [InlineKeyboardButton(text="Ha", callback_data="ubalconfirm:yes"),
+                           InlineKeyboardButton(text="Orqaga", callback_data="ubalconfirm:no")]]))
 
 
 @router.callback_query(F.data.startswith("ubalconfirm:"))
@@ -917,6 +961,8 @@ async def user_balance_confirm(c: types.CallbackQuery, state: FSMContext, db: Da
         else:
             note = "Balans o‘zgarmadi (mablag‘ yo‘q)."
     await state.clear()
+    if d.get("ui_message_id"):
+        await state.update_data(ui_message_id=d["ui_message_id"], ui_chat_id=d.get("ui_chat_id", c.message.chat.id))
     await show_user(c.message, db, await db.user(uid), True, c.from_user.id)
     await c.answer(note, show_alert=len(note) > 30)
 
@@ -930,8 +976,10 @@ async def user_message(m: types.Message, state: FSMContext, bot: Bot, db: Databa
     sent = await safe_call(lambda: m.copy_to(uid, protect_content=True))
     await delete_quietly(m)
     await state.clear()
-    await show_user(m, db, await db.user(uid), actor_id=m.from_user.id, prompt_data=d)
-    await safe_call(lambda: bot.send_message(m.chat.id, "Xabar yuborildi." if sent else "Xabar yuborilmadi."))
+    if d.get("ui_message_id"):
+        await state.update_data(ui_message_id=d["ui_message_id"], ui_chat_id=d.get("ui_chat_id", m.chat.id))
+    await show_user(m, db, await db.user(uid), actor_id=m.from_user.id, prompt_data=d,
+                    notice="Xabar yuborildi." if sent else "Xabar yuborilmadi.")
 
 
 # ===================================================================== ADMIN TAYINLASH
@@ -952,8 +1000,9 @@ async def user_admin_start(c: types.CallbackQuery, state: FSMContext, db: Databa
     if not await require(c, db, "admin_manage", alert=True):
         return
     await state.clear()
+    await state.update_data(ui_message_id=c.message.message_id, ui_chat_id=c.message.chat.id)
     uid = int(c.data.split(":")[1])
-    if uid == ADMIN_ID:
+    if is_owner(uid):
         return await c.answer("Bosh adminni qayta tayinlab bo‘lmaydi.", show_alert=True)
     await state.update_data(admin_target=uid, admin_permissions=[])
     await state.set_state(UserAdmin.admin_permissions)
@@ -967,6 +1016,7 @@ async def admin_perm_back(c: types.CallbackQuery, state: FSMContext, db: Databas
     if not await require(c, db, "admin_manage", alert=True):
         return
     await state.clear()
+    await state.update_data(ui_message_id=c.message.message_id, ui_chat_id=c.message.chat.id)
     u = await db.user(int(c.data.split(":")[1]))
     await c.answer("Admin tayinlash bekor qilindi.")
     if u:
@@ -996,7 +1046,9 @@ async def permission_done(c: types.CallbackQuery, state: FSMContext, db: Databas
     if (await state.get_data()).get("admin_target") != uid:
         return await c.answer("Admin tayinlash jarayoni topilmadi.", show_alert=True)
     await c.message.edit_text("Haqiqatdan ham shu foydalanuvchini admin qilib tayinlamoqchimisiz?",
-                              reply_markup=kb.confirm_kb(f"uadminconfirm:{uid}:yes", f"uadminconfirm:{uid}:no"))
+                              reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                  [InlineKeyboardButton(text="Ha", callback_data=f"uadminconfirm:{uid}:yes"),
+                                   InlineKeyboardButton(text="Orqaga", callback_data=f"uadminconfirm:{uid}:no")]]))
     await c.answer()
 
 
@@ -1011,14 +1063,16 @@ async def admin_confirm(c: types.CallbackQuery, state: FSMContext, db: Database)
         return await c.answer("Admin tayinlash jarayoni topilmadi.", show_alert=True)
     if answer == "no":
         await state.clear()
+        await state.update_data(ui_message_id=c.message.message_id, ui_chat_id=c.message.chat.id)
         await c.answer()
         return await show_user(c.message, db, await db.user(uid), True, c.from_user.id)
     perms = data.get("admin_permissions", [])
     await db.set_admin(uid, perms)
     await state.clear()
+    await state.update_data(ui_message_id=c.message.message_id, ui_chat_id=c.message.chat.id)
     await safe_call(lambda: c.bot.send_message(
         uid, f"Siz botga admin etib tayinlandingiz.\nUnvoningiz: {admin_level(perms)}", reply_markup=kb.admin_menu()))
-    await c.message.edit_text("Foydalanuvchi belgilangan huquqlar bilan admin etib tayinlandi.")
+    await show_user(c.message, db, await db.user(uid), True, c.from_user.id)
     await c.answer("Admin tayinlandi.")
 
 
@@ -1027,10 +1081,12 @@ async def remove_admin_ask(c: types.CallbackQuery, db: Database):
     if not await require(c, db, "admin_manage", alert=True):
         return
     uid = int(c.data.split(":")[1])
-    if uid == ADMIN_ID:
+    if is_owner(uid):
         return await c.answer("Bosh adminlikni bekor qilib bo‘lmaydi.", show_alert=True)
     await c.message.edit_text("Haqiqatdan ham shu foydalanuvchining adminlik huquqlarini bekor qilmoqchimisiz?",
-                              reply_markup=kb.confirm_kb(f"uremoveconfirm:{uid}:yes", f"uremoveconfirm:{uid}:no"))
+                              reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                  [InlineKeyboardButton(text="Ha", callback_data=f"uremoveconfirm:{uid}:yes"),
+                                   InlineKeyboardButton(text="Orqaga", callback_data=f"uremoveconfirm:{uid}:no")]]))
     await c.answer()
 
 
@@ -1040,12 +1096,12 @@ async def remove_admin_confirm(c: types.CallbackQuery, db: Database):
         return
     _, raw_uid, answer = c.data.split(":")
     uid = int(raw_uid)
-    if answer == "no" or uid == ADMIN_ID:
+    if answer == "no" or is_owner(uid):
         u = await db.user(uid)
-        await c.answer("Bosh admin himoyalangan." if uid == ADMIN_ID else None, show_alert=uid == ADMIN_ID)
+        await c.answer("Bosh admin himoyalangan." if is_owner(uid) else None, show_alert=is_owner(uid))
         return await (show_user(c.message, db, u, True, c.from_user.id) if u
                       else c.message.edit_text("Foydalanuvchi topilmadi."))
     await db.remove_admin(uid)
     await safe_call(lambda: c.bot.send_message(uid, "Adminlik huquqingiz bekor qilindi.", reply_markup=kb.main_menu()))
-    await c.message.edit_text("Adminlik bekor qilindi. Foydalanuvchi oddiy foydalanuvchi holatiga qaytarildi.")
+    await show_user(c.message, db, await db.user(uid), True, c.from_user.id)
     await c.answer()
