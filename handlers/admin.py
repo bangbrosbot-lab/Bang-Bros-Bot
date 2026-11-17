@@ -689,6 +689,21 @@ async def _admin_topup_result(c: types.CallbackQuery, text: str):
     await c.message.answer(text, reply_markup=kb.back_kb("amenu:home", "Asosiy menyu"))
 
 
+async def _already_handled(c: types.CallbackQuery, db: Database, bot: Bot, rid: int):
+    """Chekni boshqa admin allaqachon ko‘rib chiqqan: chek rasmi/matni o‘chiriladi va holat yoziladi."""
+    r = await db.topup(rid)
+    status = r["status"] if r else None
+    if status == "approved":
+        text = "Chek allaqachon ko‘rildi va tasdiqlandi."
+    elif status == "rejected":
+        text = "Chek allaqachon ko‘rildi va rad etildi."
+    else:
+        text = "Chek allaqachon ko‘rib chiqilgan."
+    await _close_receipt(bot, c.message.chat.id, c.message.message_id)
+    await _admin_topup_result(c, text)
+    await c.answer()
+
+
 @router.callback_query(F.data.startswith("topupok:"))
 async def topup_approve(c: types.CallbackQuery, state: FSMContext, db: Database, bot: Bot):
     if not await require(c, db, "payments", alert=True):
@@ -697,7 +712,7 @@ async def topup_approve(c: types.CallbackQuery, state: FSMContext, db: Database,
     rid = int(c.data.split(":")[1])
     r = await db.approve_topup(rid)
     if not r:
-        return await c.answer(ALREADY, show_alert=True)
+        return await _already_handled(c, db, bot, rid)
     await _close_receipt(bot, c.message.chat.id, c.message.message_id)
     if r["user_notice_chat"] and r["user_notice_msg"]:
         await safe_call(lambda: bot.delete_message(r["user_notice_chat"], r["user_notice_msg"]))
@@ -716,7 +731,7 @@ async def topup_reject(c: types.CallbackQuery, state: FSMContext, db: Database, 
     rid = int(c.data.split(":")[1])
     r = await db.reject_topup(rid, None)
     if not r:
-        return await c.answer(ALREADY, show_alert=True)
+        return await _already_handled(c, db, bot, rid)
     await _close_receipt(bot, c.message.chat.id, c.message.message_id)
     if r["user_notice_chat"] and r["user_notice_msg"]:
         await safe_call(lambda: bot.delete_message(r["user_notice_chat"], r["user_notice_msg"]))

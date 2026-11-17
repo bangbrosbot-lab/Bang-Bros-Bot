@@ -187,9 +187,12 @@ async def start(m: types.Message, command: CommandObject, db: Database, bot: Bot
     old_ui_chat = previous.get("ui_chat_id") or previous.get("prompt_chat_id") or m.chat.id
     if previous.get("source_chat") and previous.get("source_message"):
         await safe_call(lambda: bot.delete_message(previous["source_chat"], previous["source_message"]))
-    await delete_quietly(m)
-    await state.clear()
     ref, video_id = parse_start_args(command.args)
+    # Faqat video havolasi orqali kelgan /start o‘chiriladi. Oddiy /start (birinchi marta ham)
+    # o‘chirilmaydi — aks holda Telegram’da bot «ishlamay» qoladi.
+    if video_id is not None:
+        await delete_quietly(m)
+    await state.clear()
     uid = m.from_user.id
     is_new = await db.add_user(uid, m.from_user.full_name, m.from_user.username, ref)
     u = await db.user(uid)
@@ -765,3 +768,11 @@ async def claim_gift(call: types.CallbackQuery, db: Database, bot: Bot):
 @router.chat_join_request()
 async def track_join_request(event: types.ChatJoinRequest, db: Database):
     await db.add_join_request(event.from_user.id, event.chat.id)
+
+
+@router.chat_member()
+async def track_member_change(event: types.ChatMemberUpdated, db: Database):
+    """Foydalanuvchi kanaldan chiqib ketsa, eski «qo‘shilish so‘rovi» izi tozalanadi —
+    shunda u so‘rov izi orqali majburiy a’zolikni aylanib o‘ta olmaydi."""
+    if event.new_chat_member.status in ("left", "kicked"):
+        await db.clear_join_request(event.new_chat_member.user.id, event.chat.id)
