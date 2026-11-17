@@ -39,6 +39,10 @@ class UserAdmin(StatesGroup):
     confirm_balance = State()
 
 
+class Reply(StatesGroup):
+    text = State()
+
+
 class Broadcast(StatesGroup):
     content = State()
     button_url = State()

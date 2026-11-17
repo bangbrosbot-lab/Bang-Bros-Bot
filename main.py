@@ -11,6 +11,7 @@ from config import ADMIN_ID, BACKUP_INTERVAL_HOURS, BOT_TOKEN, DB_PATH, LOG_LEVE
 from db import Database
 from handlers.admin import menu_router, router as admin_router
 from handlers.ads import router as ads_router
+from handlers.messaging import router as messaging_router
 from handlers.user import router as user_router
 from middlewares import SubscriptionMiddleware, ThrottleMiddleware, WorkflowCleanupMiddleware
 from notifications import vip_notice_loop
@@ -70,7 +71,7 @@ async def main() -> None:
     dp.callback_query.outer_middleware(subscription)
     dp.message.outer_middleware(WorkflowCleanupMiddleware())
     # Tartib muhim: avval menyu tugmalari, keyin admin, reklama/gift, oxirida oddiy foydalanuvchi
-    for router in (menu_router, admin_router, ads_router, user_router):
+    for router in (messaging_router, menu_router, admin_router, ads_router, user_router):
         dp.include_router(router)
     dp.errors.register(on_error)
 

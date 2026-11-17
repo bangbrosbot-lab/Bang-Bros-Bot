@@ -19,6 +19,16 @@ def admin_menu():
                   [("Statistika", "amenu:stats")]])
 
 
+def home_kb():
+    """Foydalanuvchiga yuboriladigan xabarlar ostidagi «Bosh menyu» tugmasi."""
+    return back_kb("umenu:home", "Bosh menyu")
+
+
+def help_home_kb():
+    """«Yordam | Bosh menyu» tugmalari (bekor qilish/ayirish xabarlari uchun)."""
+    return _menu([[("Yordam", "umenu:help"), ("Bosh menyu", "umenu:home")]])
+
+
 def blocked_menu():
     return _menu([[("Yordam", "umenu:help")]])
 

@@ -82,11 +82,11 @@ async def finish_prompt(target, state, text, reply_markup=None):
         await state.update_data(ui_message_id=ui_mid, ui_chat_id=ui_chat)
     if mid and chat_id:
         try:
-            await target.bot.edit_message_text(text, chat_id=chat_id, message_id=mid, reply_markup=reply_markup)
-            return
+            res = await target.bot.edit_message_text(text, chat_id=chat_id, message_id=mid, reply_markup=reply_markup)
+            return res if hasattr(res, "message_id") else None
         except Exception as e:
             if is_not_modified(e):
-                return
+                return None
     if getattr(getattr(target, "from_user", None), "is_bot", False):
         try:
             return await target.edit_text(text, reply_markup=reply_markup)

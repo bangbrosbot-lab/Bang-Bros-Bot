@@ -57,6 +57,7 @@ MIGRATIONS = [
     ("topups", "user_notice_chat", "INTEGER"),
     ("topups", "user_notice_msg", "INTEGER"),
     ("admins", "permissions", "TEXT DEFAULT '[]'"),
+    ("admins", "appointed_by", "INTEGER"),  # adminni kim tayinlagan
     ("channels", "title", "TEXT"),
     ("users", "vip_notified", "TEXT"),  # qaysi vip_until uchun eslatma yuborilgan
     ("users", "vip_notify_hours", "INTEGER"),  # tugashidan necha soat oldin eslatish (1 yoki 24)
@@ -80,6 +81,7 @@ class Database:
         self.conn: aiosqlite.Connection | None = None
         self._lock = asyncio.Lock()
         self._admins: dict[int, list[str]] = {}
+        self._admin_by: dict[int, int | None] = {}
 
     # ------------------------------------------------------------------ infra
     async def connect(self):
@@ -467,8 +469,10 @@ class Database:
     # ----------------------------------------------------------------- admins
     async def _load_admins(self):
         self._admins = {}
-        for r in await self._all("SELECT user_id,permissions FROM admins"):
+        self._admin_by = {}
+        for r in await self._all("SELECT user_id,permissions,appointed_by FROM admins"):
             self._admins[r["user_id"]] = self._parse_perms(r["permissions"])
+            self._admin_by[r["user_id"]] = r["appointed_by"]
 
     @staticmethod
     def _parse_perms(raw):
@@ -488,15 +492,22 @@ class Database:
     def admins_with_permission(self, permission):
         return [u for u, p in self._admins.items() if permission in p]
 
-    async def set_admin(self, uid, permissions):
+    def admin_appointed_by(self, uid):
+        """Adminni tayinlagan odam ID si (eski adminlar uchun None — ularni faqat bosh admin oladi)."""
+        return self._admin_by.get(uid)
+
+    async def set_admin(self, uid, permissions, appointed_by=None):
         await self._exec(
-            "INSERT INTO admins(user_id,permissions) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET permissions=excluded.permissions",
-            (uid, json.dumps(list(permissions), ensure_ascii=False)))
+            "INSERT INTO admins(user_id,permissions,appointed_by) VALUES(?,?,?) ON CONFLICT(user_id) "
+            "DO UPDATE SET permissions=excluded.permissions,appointed_by=excluded.appointed_by",
+            (uid, json.dumps(list(permissions), ensure_ascii=False), appointed_by))
         self._admins[uid] = list(permissions)
+        self._admin_by[uid] = appointed_by
 
     async def remove_admin(self, uid):
         await self._exec("DELETE FROM admins WHERE user_id=?", (uid,))
         self._admins.pop(uid, None)
+        self._admin_by.pop(uid, None)
 
     # ------------------------------------------------------------------ gifts
     async def create_gift(self, kind, amount, days, limit):
