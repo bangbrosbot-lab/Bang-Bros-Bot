@@ -58,8 +58,14 @@ MIGRATIONS = [
     ("topups", "user_notice_msg", "INTEGER"),
     ("admins", "permissions", "TEXT DEFAULT '[]'"),
     ("channels", "title", "TEXT"),
-    ("users", "vip_notified", "TEXT"),  # qaysi vip_until uchun «1 kun qoldi» xabari yuborilgan
+    ("users", "vip_notified", "TEXT"),  # qaysi vip_until uchun eslatma yuborilgan
+    ("users", "vip_notify_hours", "INTEGER"),  # tugashidan necha soat oldin eslatish (1 yoki 24)
 ]
+
+# VIP tugashidan oldingi eslatma: qisqa (≈1 kunlik) obuna — 1 soat, qolganlari — 1 kun oldin
+NOTIFY_SHORT_HOURS = 1
+NOTIFY_LONG_HOURS = 24
+SHORT_PLAN_MAX = dt.timedelta(hours=36)
 
 DEFAULT_SETTINGS = {
     "card": "8600 0000 0000 0000", "vip_1": "10000", "vip_7": "20000", "vip_30": "30000",
@@ -86,15 +92,37 @@ class Database:
         await self.conn.execute("PRAGMA synchronous=NORMAL")
         await self.conn.execute("PRAGMA busy_timeout=5000")
         await self.conn.executescript(SCHEMA)
+        notify_col_added = False
         for table, column, definition in MIGRATIONS:
             cur = await self.conn.execute(f"PRAGMA table_info({table})")
             cols = {r["name"] for r in await cur.fetchall()}
             if column not in cols:
                 await self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+                if column == "vip_notify_hours":
+                    notify_col_added = True
+        if notify_col_added:
+            await self._backfill_notify_hours()
         await self.conn.executescript(INDEXES)
         for k, v in DEFAULT_SETTINGS.items():
             await self.conn.execute("INSERT OR IGNORE INTO settings VALUES(?,?)", (k, v))
         await self._load_admins()
+
+    async def _backfill_notify_hours(self):
+        """Eski bazada hozir faol VIPlar uchun eslatma muddatini belgilaydi (bir martalik)."""
+        now = utcnow()
+        cur = await self.conn.execute("SELECT user_id,vip_until FROM users WHERE vip_until>?", (iso(now),))
+        for r in await cur.fetchall():
+            until = parse(r["vip_until"])
+            if not until:
+                continue
+            hours = self._notify_hours(until)
+            if hours == NOTIFY_SHORT_HOURS:
+                # eski kod qisqa obunalarga eslatmani butunlay o‘tkazib yuborgan edi — endi 1 soat oldin yuboriladi
+                await self.conn.execute("UPDATE users SET vip_notify_hours=?,vip_notified=NULL WHERE user_id=?",
+                                        (hours, r["user_id"]))
+            else:
+                await self.conn.execute("UPDATE users SET vip_notify_hours=? WHERE user_id=?",
+                                        (hours, r["user_id"]))
 
     async def close(self):
         if self.conn:
@@ -187,9 +215,11 @@ class Database:
 
     # -------------------------------------------------------------------- VIP
     @staticmethod
-    def _notified_mark(expiry):
-        """Muddat allaqachon 24 soatdan kam bo‘lsa (masalan 1 kunlik tarif), eslatma yuborilmaydi."""
-        return iso(expiry) if expiry - utcnow() <= dt.timedelta(hours=24) else None
+    def _notify_hours(expiry) -> int:
+        """Eslatma tugashidan necha soat oldin yuboriladi.
+        VIP berilgan paytdagi umumiy qolgan muddat ≈1 kun bo‘lsa (1 kunlik obuna yoki gift) — 1 soat oldin,
+        aks holda (1 haftalik, 1 oylik va h.k.) — 1 kun oldin."""
+        return NOTIFY_SHORT_HOURS if expiry - utcnow() <= SHORT_PLAN_MAX else NOTIFY_LONG_HOURS
 
     @staticmethod
     def _vip_expiry(vip_until, days):
@@ -208,20 +238,27 @@ class Database:
             cur = await c.execute("SELECT vip_until FROM users WHERE user_id=?", (uid,))
             r = await cur.fetchone()
             expiry = self._vip_expiry(r["vip_until"] if r else None, days)
-            await c.execute("UPDATE users SET vip_until=?,vip_notified=? WHERE user_id=?",
-                            (iso(expiry), self._notified_mark(expiry), uid))
+            await c.execute("UPDATE users SET vip_until=?,vip_notified=NULL,vip_notify_hours=? WHERE user_id=?",
+                            (iso(expiry), self._notify_hours(expiry), uid))
         return expiry
 
     async def revoke_vip(self, uid):
-        await self._exec("UPDATE users SET vip_until=NULL,vip_notified=NULL WHERE user_id=?", (uid,))
+        await self._exec("UPDATE users SET vip_until=NULL,vip_notified=NULL,vip_notify_hours=NULL WHERE user_id=?", (uid,))
 
-    async def vip_expiring(self, hours=24):
-        """Muddati `hours` soat ichida tugaydigan va hali eslatma yuborilmagan VIP foydalanuvchilar."""
+    async def vip_expiring(self):
+        """Eslatma vaqti kelgan (har birining o‘z muddati: 1 soat yoki 24 soat) va hali eslatma
+        yuborilmagan VIP foydalanuvchilar. Har bir qatorda `lead` — eslatma muddati (soat)."""
         now = utcnow()
-        return await self._all(
-            "SELECT user_id,vip_until FROM users WHERE blocked=0 AND vip_until>? AND vip_until<=? "
-            "AND (vip_notified IS NULL OR vip_notified!=vip_until)",
-            (iso(now), iso(now + dt.timedelta(hours=hours))))
+        rows = await self._all(
+            "SELECT user_id,vip_until,vip_notify_hours FROM users WHERE blocked=0 AND vip_until>? "
+            "AND (vip_notified IS NULL OR vip_notified!=vip_until)", (iso(now),))
+        due = []
+        for r in rows:
+            until = parse(r["vip_until"])
+            lead = int(r["vip_notify_hours"] or NOTIFY_LONG_HOURS)
+            if until and until - now <= dt.timedelta(hours=lead):
+                due.append({"user_id": r["user_id"], "vip_until": r["vip_until"], "lead": lead})
+        return due
 
     async def mark_vip_notified(self, uid, vip_until):
         await self._exec("UPDATE users SET vip_notified=? WHERE user_id=? AND vip_until=?", (vip_until, uid, vip_until))
@@ -241,8 +278,9 @@ class Database:
             use_normal = price - use_ref
             expiry = self._vip_expiry(u["vip_until"], days)
             await c.execute(
-                "UPDATE users SET balance=balance-?,referral_balance=referral_balance-?,vip_until=?,vip_notified=? WHERE user_id=?",
-                (use_normal, use_ref, iso(expiry), self._notified_mark(expiry), uid))
+                "UPDATE users SET balance=balance-?,referral_balance=referral_balance-?,vip_until=?,"
+                "vip_notified=NULL,vip_notify_hours=? WHERE user_id=?",
+                (use_normal, use_ref, iso(expiry), self._notify_hours(expiry), uid))
             await c.execute("INSERT INTO transactions(user_id,amount,kind) VALUES(?,?,?)",
                             (uid, -price, "vip_purchase"))
         return expiry
@@ -371,6 +409,9 @@ class Database:
     async def pending_count(self, uid):
         return (await self._one("SELECT COUNT(*) n FROM topups WHERE user_id=? AND status='pending'", (uid,)))["n"]
 
+    async def topup(self, rid):
+        return await self._one("SELECT * FROM topups WHERE id=?", (rid,))
+
     async def pending_topup(self, rid):
         return await self._one("SELECT * FROM topups WHERE id=? AND status='pending'", (rid,))
 
@@ -491,8 +532,8 @@ class Database:
                                 (uid, g["amount"], "gift"))
             else:
                 expiry = self._vip_expiry(u["vip_until"], g["days"])
-                await c.execute("UPDATE users SET vip_until=?,vip_notified=? WHERE user_id=?",
-                                (iso(expiry), self._notified_mark(expiry), uid))
+                await c.execute("UPDATE users SET vip_until=?,vip_notified=NULL,vip_notify_hours=? WHERE user_id=?",
+                                (iso(expiry), self._notify_hours(expiry), uid))
             last = g["claimed"] + 1 >= g["winners_limit"]
         return "won", g, last
 

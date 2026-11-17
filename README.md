@@ -43,10 +43,10 @@ Skrinshotni barcha qurilmalarda 100% to‘xtatish kafolatlanmaydi.
 ## Loyiha tuzilishi
 ```
 main.py            ishga tushirish, xatolik handleri, avtomatik zaxira, VIP eslatma sikli
-notifications.py   VIP tugashiga 1 kun qolganda eslatma
+notifications.py   VIP eslatma: 1 kunlik — 1 soat oldin, 1 haftalik/1 oylik/gift — 1 kun oldin
 config.py          sozlamalar (env)
 db.py              SQLite qatlami (qulf + atomik tranzaksiyalar)
-access.py          bloklanganlik va obuna nazorati (kesh bilan)
+access.py          bloklanganlik va obuna nazorati (3 soniyalik kesh); middlewares.py — har amalda obunani qayta tekshiradi
 utils.py           formatlash, prompt-xabarlar, xavfsiz/ommaviy yuborish
 middlewares.py     takroriy bosishdan himoya
 timeutil.py        vaqt (UTC/Toshkent)

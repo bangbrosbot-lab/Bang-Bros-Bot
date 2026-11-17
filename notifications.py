@@ -1,4 +1,4 @@
-"""VIP tugashiga 1 kun qolganda eslatma yuborish."""
+"""VIP tugashidan oldin eslatma: 1 kunlik obuna — 1 soat, 1 haftalik/1 oylik/gift — 1 kun oldin."""
 import asyncio
 import logging
 
@@ -9,14 +9,15 @@ from utils import safe_call
 
 log = logging.getLogger(__name__)
 
-CHECK_INTERVAL = 30 * 60  # soniya
+CHECK_INTERVAL = 5 * 60  # soniya (1 soatlik eslatma aniq vaqtda ketishi uchun tez-tez tekshiriladi)
 
 
 async def send_vip_expiry_notices(bot, db: Database) -> int:
     """Eslatma har bir VIP muddati uchun faqat bir marta yuboriladi (obuna uzaytirilsa, yangi muddat uchun yana)."""
     sent = 0
-    for r in await db.vip_expiring(24):
-        text = ("Diqqat! VIP obunangiz tugashiga 1 kun qoldi.\n"
+    for r in await db.vip_expiring():
+        left = "1 soat" if r["lead"] == 1 else "1 kun"
+        text = (f"Diqqat! VIP obunangiz tugashiga {left} qoldi.\n"
                 f"Tugash vaqti: {fmt_local(r['vip_until'])}\n\n"
                 "Videolarni uzilishsiz tomosha qilish uchun obunani hozirdan uzaytiring.")
         await safe_call(lambda uid=r["user_id"]: bot.send_message(

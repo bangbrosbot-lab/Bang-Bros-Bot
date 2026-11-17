@@ -145,3 +145,9 @@ Username bo‘lmasa «@mavjud emas» emas, faqat «Mavjud emas» yoziladi; bor b
 * FSM jarayonida yuborilgan foydalanuvchi xabarlari handlerdan keyin o‘chiriladi; xato javoblari mavjud prompt xabarini tahrirlaydi. Menyu almashganda reklama preview kabi vaqtinchalik nusxalar ham tozalanadi.
 * Foydalanuvchi menyusidagi bo‘limlar bir xil xabarni tahrirlab ochiladi; `/start` qayta bosilganda avvalgi vaqtinchalik prompt o‘chiriladi.
 * Like/dislike va reklama ovozlarida boshlang‘ich `0` ko‘rsatilmaydi. Birinchi ovozdan keyingina tegishli tugmada `(1)` ko‘rinadi; nolga qaytsa raqam yana yashiriladi.
+
+## 7. Oxirgi tuzatishlar
+1. **/start:** faqat video havolasi (`?start=video_…`) orqali kelgan /start o‘chiriladi; oddiy /start (birinchi marta ham) o‘chirilmaydi.
+2. **Majburiy a’zolik:** `SubscriptionMiddleware` har bir xabar/tugmada obunani qayta tekshiradi (avval Orqaga/Kabinet/ovoz/gift/chek bosqichlari tekshirilmasdi). Kesh 90 s → 3 s. Kanaldan chiqqan foydalanuvchining eski «qo‘shilish so‘rovi» izi `chat_member` hodisasida tozalanadi.
+3. **VIP eslatma:** 1 kunlik obuna (va 1 kunlik gift) — tugashiga 1 soat qolganda; 1 haftalik/1 oylik/uzoq gift — 1 kun qolganda. Olingan zahoti eslatma ketmaydi. Tekshiruv har 5 daqiqada.
+4. **Chek bir nechta adminda:** chek faqat «Chek tasdiqlash» huquqi bor adminlarga (va bosh adminga) boradi. Birinchi admin qaror qilgach, boshqa adminlar tugma bossa, chek rasmi/matni o‘chiriladi va «Chek allaqachon ko‘rildi va tasdiqlandi/rad etildi.» + «Asosiy menyu» tugmasi chiqadi.

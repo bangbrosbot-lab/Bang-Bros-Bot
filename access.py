@@ -14,7 +14,7 @@ BLOCKED_TEXT = ("Siz botdan butunlay blocklandingiz. Sababini bilmoqchi bo‘lsa
                 "Yordam bo‘limidan adminga murojaat qiling.")
 NO_ACCESS = "Botdan foydalanish huquqingiz cheklangan."
 
-_SUB_TTL = 90  # soniya: faqat MUVAFFAQIYATLI tekshiruv eslab qolinadi
+_SUB_TTL = 3  # soniya: faqat MUVAFFAQIYATLI tekshiruv eslab qolinadi (kanaldan chiqsa, deyarli darrov seziladi)
 _sub_ok: dict[int, float] = {}
 
 
