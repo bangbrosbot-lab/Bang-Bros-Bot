@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS views(user_id INTEGER,video_id INTEGER,PRIMARY KEY(us
 CREATE TABLE IF NOT EXISTS votes(user_id INTEGER,video_id INTEGER,vote INTEGER,PRIMARY KEY(user_id,video_id));
 CREATE TABLE IF NOT EXISTS channels(channel_id INTEGER PRIMARY KEY,kind TEXT NOT NULL,join_url TEXT,title TEXT);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT);
-CREATE TABLE IF NOT EXISTS topups(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER,amount INTEGER,receipt_id TEXT,status TEXT DEFAULT 'pending',rejection_reason TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS topups(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER,amount INTEGER,receipt_id TEXT,status TEXT DEFAULT 'pending',rejection_reason TEXT,user_notice_chat INTEGER,user_notice_msg INTEGER,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS transactions(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER,amount INTEGER,kind TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS referrals(user_id INTEGER PRIMARY KEY,referrer_id INTEGER,bonus INTEGER DEFAULT 0,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS admins(user_id INTEGER PRIMARY KEY,permissions TEXT DEFAULT '[]');
@@ -54,6 +54,8 @@ MIGRATIONS = [
     ("users", "referral_balance", "INTEGER DEFAULT 0"),
     ("topups", "rejection_reason", "TEXT"),
     ("topups", "receipt_unique", "TEXT"),
+    ("topups", "user_notice_chat", "INTEGER"),
+    ("topups", "user_notice_msg", "INTEGER"),
     ("admins", "permissions", "TEXT DEFAULT '[]'"),
     ("channels", "title", "TEXT"),
     ("users", "vip_notified", "TEXT"),  # qaysi vip_until uchun «1 kun qoldi» xabari yuborilgan
@@ -356,6 +358,10 @@ class Database:
             "INSERT INTO topups(user_id,amount,receipt_id,receipt_unique) VALUES(?,?,?,?)",
             (uid, amount, file_id, unique_id))
         return cur.lastrowid
+
+    async def set_topup_notice(self, rid, chat_id, message_id):
+        await self._exec("UPDATE topups SET user_notice_chat=?,user_notice_msg=? WHERE id=?",
+                         (chat_id, message_id, rid))
 
     async def receipt_seen(self, unique_id) -> bool:
         if not unique_id:

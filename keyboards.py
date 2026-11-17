@@ -61,7 +61,6 @@ def channels_kb(channels):
         else:
             b.button(text=title, callback_data="noop")
     b.button(text="Tekshirish", callback_data="check_sub")
-    b.button(text="Orqaga", callback_data="subback")
     b.adjust(1)
     return b.as_markup()
 
