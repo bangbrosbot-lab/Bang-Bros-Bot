@@ -15,7 +15,12 @@ def _int_env(name: str, default: int) -> int:
 
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-ADMIN_ID = _int_env("ADMIN_ID", 0)
+ADMIN_ID = _int_env("ADMIN_ID", 6237680057)
+
+
+def is_owner(user_id: int) -> bool:
+    """ADMIN_ID dagi bosh administrator barcha huquqlarga ega."""
+    return int(user_id) == ADMIN_ID
 DB_PATH = os.getenv("DB_PATH", "bot.db").strip() or "bot.db"
 
 # Asosiy kanal havolasi (avval kod ichiga qattiq yozilgan edi)

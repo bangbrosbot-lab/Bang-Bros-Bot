@@ -76,7 +76,10 @@ async def show_prompt(target, state, text, reply_markup=None):
 async def finish_prompt(target, state, text, reply_markup=None):
     data = await state.get_data()
     mid, chat_id = data.get("prompt_id"), data.get("prompt_chat_id")
+    ui_mid, ui_chat = data.get("ui_message_id"), data.get("ui_chat_id")
     await state.clear()
+    if ui_mid and ui_chat:
+        await state.update_data(ui_message_id=ui_mid, ui_chat_id=ui_chat)
     if mid and chat_id:
         try:
             await target.bot.edit_message_text(text, chat_id=chat_id, message_id=mid, reply_markup=reply_markup)

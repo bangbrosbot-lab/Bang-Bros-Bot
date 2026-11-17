@@ -1,9 +1,11 @@
 import time
 
 from aiogram import BaseMiddleware
-from aiogram.types import CallbackQuery
+from aiogram.types import CallbackQuery, Message
 
-from config import ADMIN_ID
+from utils import delete_quietly
+
+from config import is_owner
 
 
 class ThrottleMiddleware(BaseMiddleware):
@@ -15,7 +17,7 @@ class ThrottleMiddleware(BaseMiddleware):
 
     async def __call__(self, handler, event, data):
         user = data.get("event_from_user")
-        if user and user.id != ADMIN_ID:
+        if user and not is_owner(user.id):
             now = time.monotonic()
             if now - self._last.get(user.id, 0.0) < self.interval:
                 if isinstance(event, CallbackQuery):
@@ -28,3 +30,21 @@ class ThrottleMiddleware(BaseMiddleware):
                 self._last.clear()
             self._last[user.id] = now
         return await handler(event, data)
+
+
+class WorkflowCleanupMiddleware(BaseMiddleware):
+    """FSM jarayonida foydalanuvchi yuborgan vaqtinchalik xabarlarni handlerdan keyin o‘chiradi."""
+
+    async def __call__(self, handler, event, data):
+        state = data.get("state")
+        active = False
+        if isinstance(event, Message) and state is not None:
+            try:
+                active = bool(await state.get_state())
+            except Exception:
+                active = False
+        try:
+            return await handler(event, data)
+        finally:
+            if active and isinstance(event, Message) and event.from_user:
+                await delete_quietly(event)

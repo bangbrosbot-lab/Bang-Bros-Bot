@@ -12,7 +12,7 @@ from db import Database
 from handlers.admin import menu_router, router as admin_router
 from handlers.ads import router as ads_router
 from handlers.user import router as user_router
-from middlewares import ThrottleMiddleware
+from middlewares import ThrottleMiddleware, WorkflowCleanupMiddleware
 from notifications import vip_notice_loop
 
 log = logging.getLogger("bot")
@@ -64,6 +64,7 @@ async def main() -> None:
     dp["db"] = db
     throttle = ThrottleMiddleware()
     dp.message.outer_middleware(throttle)
+    dp.message.outer_middleware(WorkflowCleanupMiddleware())
     dp.callback_query.outer_middleware(throttle)
     # Tartib muhim: avval menyu tugmalari, keyin admin, reklama/gift, oxirida oddiy foydalanuvchi
     for router in (menu_router, admin_router, ads_router, user_router):

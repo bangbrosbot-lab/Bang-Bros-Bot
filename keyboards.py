@@ -26,14 +26,14 @@ def blocked_menu():
 def desk():
     return _menu([[("Video qo‘shish", "amenu:addvideo"), ("Video o‘chirish", "amenu:delvideo")],
                   [("Reklama jo‘natish", "amenu:broadcast"), ("Gift o‘tkazish", "amenu:gift")],
-                  [("Bosh menyu", "amenu:home")]])
+                  [("Orqaga", "amenu:home")]])
 
 
 def settings():
     return _menu([[("Kanallar", "amenu:channels"), ("Foydalanuvchilar", "amenu:users")],
                   [("Karta edit", "amenu:card"), ("VIP edit", "amenu:vip"), ("Info edit", "amenu:info")],
                   [("Referral edit", "amenu:referral"), ("Admin link edit", "amenu:adminlink")],
-                  [("Bosh menyu", "amenu:home")]])
+                  [("Orqaga", "amenu:home")]])
 
 
 def confirm_kb(yes: str, no: str) -> InlineKeyboardMarkup:
@@ -61,6 +61,7 @@ def channels_kb(channels):
         else:
             b.button(text=title, callback_data="noop")
     b.button(text="Tekshirish", callback_data="check_sub")
+    b.button(text="Orqaga", callback_data="subback")
     b.adjust(1)
     return b.as_markup()
 
@@ -73,5 +74,5 @@ def id_kb(page: int, total: int) -> InlineKeyboardMarkup:
         nav.append(InlineKeyboardButton(text="Oldinga", callback_data=f"idpage:{page + 1}"))
     if nav:
         rows.append(nav)
-    rows.append([InlineKeyboardButton(text="Bosh menyu", callback_data="idhome")])
+    rows.append([InlineKeyboardButton(text="Orqaga", callback_data="idhome")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

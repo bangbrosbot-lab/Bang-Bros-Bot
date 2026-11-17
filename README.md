@@ -6,7 +6,7 @@ Railway project → Variables bo‘limiga kiriting:
 | O‘zgaruvchi | Majburiy | Izoh |
 |---|---|---|
 | `BOT_TOKEN` | ha | BotFather bergan token |
-| `ADMIN_ID` | ha | Bosh administrator Telegram ID si |
+| `ADMIN_ID` | ha | Bosh administrator Telegram ID si; barcha huquqlar avtomatik beriladi |
 | `DB_PATH` | yo‘q | Standart `bot.db`. **Volume ulansa: `/data/bot.db`** |
 | `CHANNEL_URL` | yo‘q | Asosiy kanal havolasi (standart: eski havola) |
 | `MIN_TOPUP` / `MAX_TOPUP` | yo‘q | Hisob to‘ldirish chegaralari (3 000 / 50 000 000) |

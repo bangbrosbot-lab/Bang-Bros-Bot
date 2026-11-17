@@ -6,6 +6,7 @@ import logging
 import time
 
 from keyboards import blocked_menu, channels_kb
+from utils import delete_quietly
 
 log = logging.getLogger(__name__)
 
@@ -53,7 +54,7 @@ async def subscribed(bot, db, uid: int, use_cache: bool = True) -> bool:
     return True
 
 
-async def ask_sub(m, db) -> None:
+async def ask_sub(m, db):
     for ch in await db.mandatory():
         if not ch["title"]:
             try:
@@ -63,8 +64,18 @@ async def ask_sub(m, db) -> None:
             except Exception:
                 pass
     channels = await db.mandatory()
-    # Bitta xabar. Pastki menyu (Kabinet/Yordam/...) olib tashlanmaydi.
-    await m.answer("Botdan foydalanish uchun quyidagi kanallarga obuna bo‘ling!", reply_markup=channels_kb(channels))
+    text = "Botdan foydalanish uchun quyidagi kanallarga obuna bo‘ling!"
+    markup = channels_kb(channels)
+    # Callbackdan kelgan bot xabarini tahrirlaymiz, media bo‘lsa avval o‘chiramiz.
+    if getattr(getattr(m, "from_user", None), "is_bot", False):
+        if m.video or m.photo or m.animation or m.document or m.audio:
+            await delete_quietly(m)
+            return await m.answer(text, reply_markup=markup)
+        try:
+            return await m.edit_text(text, reply_markup=markup)
+        except Exception:
+            await delete_quietly(m)
+    return await m.answer(text, reply_markup=markup)
 
 
 async def guard_message(m, db, bot, need_sub: bool = True) -> bool:

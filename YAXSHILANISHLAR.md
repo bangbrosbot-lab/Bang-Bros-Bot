@@ -137,3 +137,11 @@ Admin huquqlarini belgilash (`Orqaga` + `Bo‘ldi`), kanallar bo‘limi (qo‘sh
 
 ## 3-versiya: username ko‘rinishi
 Username bo‘lmasa «@mavjud emas» emas, faqat «Mavjud emas» yoziladi; bor bo‘lsa «@nom». Barcha joyda yagona `username_text()` ishlatiladi: kabinet, admin profili, `/id` ro‘yxati, yangi foydalanuvchi xabari, to‘lov cheki xabari va gift g‘oliblari ro‘yxati.
+
+
+## 4-yangilanish: admin huquqlari, orqaga navigatsiya va like ko‘rinishi
+* Bot egasining ID si mavjud `ADMIN_ID` o‘zgaruvchisidan olinadi; shu ID egasi barcha ruxsatlarga avtomatik ega bo‘ladi. Menyu callbackidan ishga tushgan sozlama handlerlarida bot xabari `from_user` ID si emas, shaxsiy chat ID si tekshiriladi — shu sababli bosh admin endi «huquqingiz yetmaydi» xabarini olmaydi.
+* Admin va foydalanuvchi bo‘limlaridagi kerakli bosqichlarga «Orqaga» tugmalari qo‘shildi.
+* FSM jarayonida yuborilgan foydalanuvchi xabarlari handlerdan keyin o‘chiriladi; xato javoblari mavjud prompt xabarini tahrirlaydi. Menyu almashganda reklama preview kabi vaqtinchalik nusxalar ham tozalanadi.
+* Foydalanuvchi menyusidagi bo‘limlar bir xil xabarni tahrirlab ochiladi; `/start` qayta bosilganda avvalgi vaqtinchalik prompt o‘chiriladi.
+* Like/dislike va reklama ovozlarida boshlang‘ich `0` ko‘rsatilmaydi. Birinchi ovozdan keyingina tegishli tugmada `(1)` ko‘rinadi; nolga qaytsa raqam yana yashiriladi.
