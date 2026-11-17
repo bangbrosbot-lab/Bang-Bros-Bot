@@ -58,6 +58,16 @@ async def show_prompt(target, state, text, reply_markup=None):
         except Exception as e:
             if is_not_modified(e):
                 return None
+    # Callback tugmasidan boshlangan yangi amal bo‘lsa, botning avvalgi
+    # boshqaruv xabarini tahrirlaymiz; chatda eski prompt yig‘ilib qolmaydi.
+    if getattr(getattr(target, "from_user", None), "is_bot", False):
+        try:
+            msg = await target.edit_text(text, reply_markup=reply_markup)
+            await state.update_data(prompt_id=msg.message_id, prompt_chat_id=msg.chat.id)
+            return msg
+        except Exception as e:
+            if is_not_modified(e):
+                return target
     msg = await target.answer(text, reply_markup=reply_markup)
     await state.update_data(prompt_id=msg.message_id, prompt_chat_id=msg.chat.id)
     return msg
@@ -74,7 +84,13 @@ async def finish_prompt(target, state, text, reply_markup=None):
         except Exception as e:
             if is_not_modified(e):
                 return
-    await target.answer(text, reply_markup=reply_markup)
+    if getattr(getattr(target, "from_user", None), "is_bot", False):
+        try:
+            return await target.edit_text(text, reply_markup=reply_markup)
+        except Exception as e:
+            if is_not_modified(e):
+                return None
+    return await target.answer(text, reply_markup=reply_markup)
 
 
 async def safe_call(factory: Callable[[], Awaitable], retries: int = 2) -> bool:
