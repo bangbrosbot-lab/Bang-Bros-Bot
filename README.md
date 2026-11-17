@@ -42,7 +42,8 @@ Skrinshotni barcha qurilmalarda 100% to‘xtatish kafolatlanmaydi.
 
 ## Loyiha tuzilishi
 ```
-main.py            ishga tushirish, xatolik handleri, avtomatik zaxira
+main.py            ishga tushirish, xatolik handleri, avtomatik zaxira, VIP eslatma sikli
+notifications.py   VIP tugashiga 1 kun qolganda eslatma
 config.py          sozlamalar (env)
 db.py              SQLite qatlami (qulf + atomik tranzaksiyalar)
 access.py          bloklanganlik va obuna nazorati (kesh bilan)

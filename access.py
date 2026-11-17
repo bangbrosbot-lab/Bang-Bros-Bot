@@ -5,8 +5,6 @@ import asyncio
 import logging
 import time
 
-from aiogram.types import ReplyKeyboardRemove
-
 from keyboards import blocked_menu, channels_kb
 
 log = logging.getLogger(__name__)
@@ -65,8 +63,8 @@ async def ask_sub(m, db) -> None:
             except Exception:
                 pass
     channels = await db.mandatory()
-    await m.answer("Botdan foydalanish uchun quyidagi kanallarga obuna bo‘ling!", reply_markup=ReplyKeyboardRemove())
-    await m.answer("Quyidagi kanallarga obuna bo‘ling:", reply_markup=channels_kb(channels))
+    # Bitta xabar. Pastki menyu (Kabinet/Yordam/...) olib tashlanmaydi.
+    await m.answer("Botdan foydalanish uchun quyidagi kanallarga obuna bo‘ling!", reply_markup=channels_kb(channels))
 
 
 async def guard_message(m, db, bot, need_sub: bool = True) -> bool:

@@ -7,6 +7,7 @@ def _reply(rows):
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text=t) for t in row] for row in rows],
         resize_keyboard=True,
+        is_persistent=True,  # pastki menyu yig‘ilib/yo‘qolib qolmaydi
     )
 
 
@@ -44,6 +45,10 @@ def confirm_kb(yes: str, no: str) -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="Ha", callback_data=yes),
         InlineKeyboardButton(text="Yo‘q", callback_data=no),
     ]])
+
+
+def back_kb(data: str, text: str = "Orqaga") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=text, callback_data=data)]])
 
 
 def rows_kb(rows) -> InlineKeyboardMarkup:

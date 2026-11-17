@@ -13,6 +13,7 @@ from handlers.admin import menu_router, router as admin_router
 from handlers.ads import router as ads_router
 from handlers.user import router as user_router
 from middlewares import ThrottleMiddleware
+from notifications import vip_notice_loop
 
 log = logging.getLogger("bot")
 _error_alerts: dict[str, float] = {}
@@ -70,6 +71,7 @@ async def main() -> None:
     dp.errors.register(on_error)
 
     backup_task = None
+    notice_task = asyncio.create_task(vip_notice_loop(bot, db))
     try:
         await bot.delete_webhook(drop_pending_updates=False)
         if BACKUP_INTERVAL_HOURS > 0:
@@ -77,6 +79,7 @@ async def main() -> None:
         log.info("Bot ishga tushdi (baza: %s)", DB_PATH)
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
+        notice_task.cancel()
         if backup_task:
             backup_task.cancel()
         await db.close()

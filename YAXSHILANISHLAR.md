@@ -76,3 +76,64 @@ Bir qatorga sig‘dirilgan `;` li kod to‘liq qayta yozildi; takrorlanuvchi man
 * FSM holati xotirada (qayta ishga tushganda jarayon tugaydi — endi xato emas, tushunarli xabar chiqadi).
 * VIP tugashi haqida eslatma yo‘q.
 * Kontent 18+ bo‘lsa, yoshni tasdiqlash bosqichi tavsiya etiladi.
+
+
+---
+
+# 2-yangilanish (qulaylik va chatni tozalash)
+
+## Chat toza bo‘lishi
+* **Obuna matni endi bitta xabar:** «Botdan foydalanish uchun quyidagi kanallarga obuna bo‘ling!» va ostida kanal tugmalari (avval ikkita xabar edi). Pastki menyu (Kabinet / Yordam / Bot haqida) endi olib tashlanmaydi.
+* **«Asosiy menyu» xabari** teaser va har sifat almashtirishdan keyin chiqmaydi. Faqat butunlay yangi foydalanuvchi video havolasi orqali birinchi marta kirganda (unda pastki menyu hali yo‘q) **bir marta** chiqadi.
+* **Pastki bo‘limlar yo‘qolmasligi:** menyu «doimiy» (`is_persistent`) qilindi — yig‘ilib qolmaydi; obuna so‘ralganda ham olib tashlanmaydi. `/start` bosilsa menyu qayta tiklanadi.
+* **Sifatni almashtirish** endi yangi xabar yubormaydi: «Video sifatini almashtirish» bosilganda tugmalar videoning o‘z xabarida chiqadi (**Orqaga** tugmasi bilan), sifat tanlansa video o‘sha xabarda almashadi. Biror sabab bilan Telegram buni qabul qilmasa, eski usulga (o‘chirib qayta yuborish) avtomatik qaytadi.
+* VIP tariflari, referral qoidalari, to‘lov va kanal bo‘limlarida yangi xabar o‘rniga mavjud xabar tahrirlanadi.
+
+## Video o‘chirilgan yoki VIP tugagan holatlar
+* Video bazadan o‘chirilgan bo‘lsa, eski xabardagi sifat/to‘liq video/ovoz tugmalari: **«Hozirda ushbu video mavjud emas.»** (bo‘sh «Sifatni tanlang» chiqmaydi).
+* VIP muddati tugagan bo‘lsa, eski xabardagi sifat almashtirish: **«Videoni tomosha qilish uchun VIP obuna sotib oling!»** — hech qanday video yoki tugma chiqmaydi.
+
+## Kabinet va VIP eslatmasi
+* VIP foydalanuvchi kabinetida **«VIP muddati: …»** (Toshkent vaqti) ko‘rinadi, **«VIP olish» tugmasi chiqmaydi**.
+* **VIP tugashiga 1 kun qolganda** bot eslatma yuboradi («VIP olish» tugmasi bilan). Tugma bosilsa eslatmaning o‘zi VIP tariflariga aylanadi.
+  Har bir muddat uchun eslatma faqat bir marta; obuna uzaytirilsa yangi muddat uchun yana. 1 kunlik tarif olganda darhol eslatma kelmaydi. Tekshiruv har 30 daqiqada.
+
+## «Orqaga» tugmalari (admin)
+* **Admin tayinlash:** huquqlar oynasida «Orqaga» — hech narsa saqlanmay foydalanuvchi profiliga qaytadi.
+* VIP narxini o‘zgartirish, Kanallar (qo‘shish/o‘chirish), foydalanuvchi amallari (balans/VIP/xabar), video qo‘shishda sifat tanlash, Gift (tur → tarif/summa → g‘oliblar) bo‘limlarida ham «Orqaga».
+* Foydalanuvchi tomonida: hisobni to‘ldirish bosqichlarida «Orqaga» (kabinetga qaytish).
+
+## Sinovlar
+92 ta stsenariy (yangi xatti-harakatlarning hammasi) va 17 ta baza testi o‘tdi. Eslatma: `edit_media` ishlashi faqat haqiqiy Telegramda to‘liq tasdiqlanadi (zaxira yo‘li bor).
+
+---
+
+# 2-versiya: chatni toza saqlash va qulayliklar
+
+## Chatdagi ortiqcha xabarlar
+* **Majburiy obuna xabari endi bitta:** «Botdan foydalanish uchun quyidagi kanallarga obuna bo‘ling!» (kanal tugmalari shu xabarning o‘zida).
+* **«Asosiy menyu» xabari** teaserdan keyin va har sifat almashtirganda chiqmaydi. Pastki menyu faqat bir marta — mutlaqo yangi foydalanuvchi birinchi marta video havolasi orqali kirganda (menyusi hali yo‘q) yuboriladi; `/start` bosilganda ham tiklanadi.
+* **Sifat almashtirish** endi yangi xabar yaratmaydi: tugmalar video xabarning o‘zida chiqadi, tanlangach video o‘sha xabarning o‘zida almashadi (sarlavhada yangi sifat). «Orqaga» tugmasi asl holatni qaytaradi. Agar Telegram xabarni tahrirlashga ruxsat bermasa (masalan, juda eski xabar), eski usulga (o‘chirib, qayta yuborish) o‘tadi.
+* Hisob to‘ldirish, VIP tarif tasdig‘i va referral qoidalari yangi xabar yaratmasdan, mavjud xabarni tahrirlaydi.
+
+## Pastki bo‘limlar (Kabinet / Yordam / Bot haqida)
+Klaviatura endi «doimiy» (`is_persistent`) — yig‘ilib yoki yo‘qolib qolmaydi; obuna so‘ralganda ham olib tashlanmaydi.
+
+## O‘chirilgan video va muddati tugagan VIP
+* Video bazadan o‘chirilgan bo‘lsa, foydalanuvchidagi eski xabarlarda tugmalar bosilganda «Hozirda ushbu video mavjud emas.» deb chiqadi (bo‘sh «sifatni tanlang» xabari chiqmaydi).
+* VIP muddati tugagan foydalanuvchi eski videodagi «Video sifatini almashtirish»ni bossa: «Videoni tomosha qilish uchun VIP obuna sotib oling!» — hech qanday video yoki tanlov chiqmaydi.
+* Tekshiruv tartibi: avval VIP, keyin video mavjudligi.
+
+## Kabinet va VIP
+* VIP foydalanuvchi kabinetida **VIP tugash muddati** ko‘rinadi, «VIP olish» tugmasi esa yo‘q.
+* **Tugashiga 1 kun qolganda** avtomatik xabar yuboriladi, ostida «VIP olish» tugmasi; bossa shu xabarning o‘zi tariflar ro‘yxatiga aylanadi. Har bir muddat uchun faqat bir marta yuboriladi (uzaytirilsa, yangi muddat uchun yana eslatiladi); 1 kunlik tarif olinganda darhol eslatma kelmaydi. Bot har 30 daqiqada tekshiradi.
+
+## «Orqaga» tugmalari
+Admin huquqlarini belgilash (`Orqaga` + `Bo‘ldi`), kanallar bo‘limi (qo‘shish/o‘chirish), VIP narxini o‘zgartirish, foydalanuvchi amallari (summa/kun/xabar kiritish), video qo‘shishda sifat tanlash, Gift (tur → tarif/summa → g‘oliblar soni), foydalanuvchining hisob to‘ldirish bosqichlari.
+
+## Sinovlar
+`tests/test_db.py` — 17 ta test; handlerlar bo‘yicha soxta Telegram bilan 92 ta stsenariy — hammasi o‘tdi. Eski bazadan migratsiya (yangi `vip_notified` ustuni) tekshirildi.
+**Eslatma:** sinovlar oflayn muhitda o‘tkazilgan; sifatni xabar ichida almashtirish (`editMessageMedia`) haqiqiy Telegramda test botda bir marta tekshirib ko‘rilsin.
+
+## 3-versiya: username ko‘rinishi
+Username bo‘lmasa «@mavjud emas» emas, faqat «Mavjud emas» yoziladi; bor bo‘lsa «@nom». Barcha joyda yagona `username_text()` ishlatiladi: kabinet, admin profili, `/id` ro‘yxati, yangi foydalanuvchi xabari, to‘lov cheki xabari va gift g‘oliblari ro‘yxati.

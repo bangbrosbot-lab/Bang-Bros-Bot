@@ -18,6 +18,12 @@ def money(n) -> str:
     return f"{int(n or 0):,}".replace(",", " ")
 
 
+def username_text(username) -> str:
+    """«@nom» yoki, username bo‘lmasa, «Mavjud emas» (hech qachon «@mavjud emas» emas)."""
+    name = (username or "").lstrip("@").strip()
+    return f"@{name}" if name else "Mavjud emas"
+
+
 def esc(value) -> str:
     return html.escape(str(value or ""))
 

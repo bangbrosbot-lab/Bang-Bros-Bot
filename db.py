@@ -56,6 +56,7 @@ MIGRATIONS = [
     ("topups", "receipt_unique", "TEXT"),
     ("admins", "permissions", "TEXT DEFAULT '[]'"),
     ("channels", "title", "TEXT"),
+    ("users", "vip_notified", "TEXT"),  # qaysi vip_until uchun «1 kun qoldi» xabari yuborilgan
 ]
 
 DEFAULT_SETTINGS = {
@@ -184,6 +185,11 @@ class Database:
 
     # -------------------------------------------------------------------- VIP
     @staticmethod
+    def _notified_mark(expiry):
+        """Muddat allaqachon 24 soatdan kam bo‘lsa (masalan 1 kunlik tarif), eslatma yuborilmaydi."""
+        return iso(expiry) if expiry - utcnow() <= dt.timedelta(hours=24) else None
+
+    @staticmethod
     def _vip_expiry(vip_until, days):
         now = utcnow()
         until = parse(vip_until)
@@ -200,11 +206,23 @@ class Database:
             cur = await c.execute("SELECT vip_until FROM users WHERE user_id=?", (uid,))
             r = await cur.fetchone()
             expiry = self._vip_expiry(r["vip_until"] if r else None, days)
-            await c.execute("UPDATE users SET vip_until=? WHERE user_id=?", (iso(expiry), uid))
+            await c.execute("UPDATE users SET vip_until=?,vip_notified=? WHERE user_id=?",
+                            (iso(expiry), self._notified_mark(expiry), uid))
         return expiry
 
     async def revoke_vip(self, uid):
-        await self._exec("UPDATE users SET vip_until=NULL WHERE user_id=?", (uid,))
+        await self._exec("UPDATE users SET vip_until=NULL,vip_notified=NULL WHERE user_id=?", (uid,))
+
+    async def vip_expiring(self, hours=24):
+        """Muddati `hours` soat ichida tugaydigan va hali eslatma yuborilmagan VIP foydalanuvchilar."""
+        now = utcnow()
+        return await self._all(
+            "SELECT user_id,vip_until FROM users WHERE blocked=0 AND vip_until>? AND vip_until<=? "
+            "AND (vip_notified IS NULL OR vip_notified!=vip_until)",
+            (iso(now), iso(now + dt.timedelta(hours=hours))))
+
+    async def mark_vip_notified(self, uid, vip_until):
+        await self._exec("UPDATE users SET vip_notified=? WHERE user_id=? AND vip_until=?", (vip_until, uid, vip_until))
 
     async def purchase_vip(self, uid, days, price):
         """Balansdan (avval referral, so‘ng oddiy) yechib VIP beradi. Yetmasa None."""
@@ -221,8 +239,8 @@ class Database:
             use_normal = price - use_ref
             expiry = self._vip_expiry(u["vip_until"], days)
             await c.execute(
-                "UPDATE users SET balance=balance-?,referral_balance=referral_balance-?,vip_until=? WHERE user_id=?",
-                (use_normal, use_ref, iso(expiry), uid))
+                "UPDATE users SET balance=balance-?,referral_balance=referral_balance-?,vip_until=?,vip_notified=? WHERE user_id=?",
+                (use_normal, use_ref, iso(expiry), self._notified_mark(expiry), uid))
             await c.execute("INSERT INTO transactions(user_id,amount,kind) VALUES(?,?,?)",
                             (uid, -price, "vip_purchase"))
         return expiry
@@ -467,7 +485,8 @@ class Database:
                                 (uid, g["amount"], "gift"))
             else:
                 expiry = self._vip_expiry(u["vip_until"], g["days"])
-                await c.execute("UPDATE users SET vip_until=? WHERE user_id=?", (iso(expiry), uid))
+                await c.execute("UPDATE users SET vip_until=?,vip_notified=? WHERE user_id=?",
+                                (iso(expiry), self._notified_mark(expiry), uid))
             last = g["claimed"] + 1 >= g["winners_limit"]
         return "won", g, last
 
