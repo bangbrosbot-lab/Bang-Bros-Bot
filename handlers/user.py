@@ -418,9 +418,37 @@ async def send_cabinet(target, uid, db, edit=False):
     return await (target.edit_text(text, reply_markup=markup) if edit else target.answer(text, reply_markup=markup))
 
 
+HELP_TEXT = "Agar sizda muammolar yoki qanaqadur savollar paydo bo‘lgan bo‘lsa admin bilan bog‘lanishingiz mumkin"
+
+
+async def _admin_url(db) -> str:
+    url = (await db.setting("admin_link") or "").strip()
+    if url.startswith("@"):
+        url = "https://t.me/" + url[1:]
+    elif url.startswith("t.me/"):
+        url = "https://" + url
+    return url if url.startswith(("https://", "http://", "tg://")) else ""
+
+
+def _help_markup(url: str, back: str = "umenu:home") -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(text="Bog‘lanish", url=url)]] if url else []
+    rows.append([InlineKeyboardButton(text="Orqaga", callback_data=back)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 @router.callback_query(F.data.startswith("umenu:"))
 async def user_inline_menu(c: types.CallbackQuery, db: Database, bot: Bot, state: FSMContext):
     key = c.data.split(":", 1)[1]
+    u0 = await db.user(c.from_user.id)
+    if u0 and u0["blocked"]:
+        # Bloklangan foydalanuvchi faqat «Yordam» bo‘limidan foydalana oladi
+        if key not in ("help", "home", "blocked"):
+            return await c.answer(NO_ACCESS, show_alert=True)
+        await state.clear()
+        await c.answer()
+        if key == "help":
+            return await replace_menu_message(c.message, HELP_TEXT, _help_markup(await _admin_url(db), "umenu:blocked"))
+        return await replace_menu_message(c.message, BLOCKED_TEXT, blocked_menu())
     # Orqaga/Kabinet tugmalari obuna tekshiruvi sababli bloklanib qolmasin.
     if not await guard_call(c, db, bot, need_sub=key not in ("home", "cabinet")):
         return
@@ -459,19 +487,7 @@ async def user_inline_menu(c: types.CallbackQuery, db: Database, bot: Bot, state
             if prompt:
                 await state.update_data(ui_message_id=prompt.message_id, ui_chat_id=prompt.chat.id)
             return prompt
-        url = (await db.setting("admin_link") or "").strip()
-        if url.startswith("@"):
-            url = "https://t.me/" + url[1:]
-        elif url.startswith("t.me/"):
-            url = "https://" + url
-        rows = []
-        if url.startswith(("https://", "http://", "tg://")):
-            rows.append([InlineKeyboardButton(text="Bog‘lanish", url=url)])
-        rows.append([InlineKeyboardButton(text="Orqaga", callback_data="umenu:home")])
-        return await replace_menu_message(
-            c.message,
-            "Agar sizda muammolar yoki qanaqadur savollar paydo bo‘lgan bo‘lsa admin bilan bog‘lanishingiz mumkin",
-            InlineKeyboardMarkup(inline_keyboard=rows))
+        return await replace_menu_message(c.message, HELP_TEXT, _help_markup(await _admin_url(db)))
 
 
 # Menyu tugmalari holatdan (state) qat’i nazar ishlaydi — shuning uchun TopUp holatlaridan OLDIN ro‘yxatdan o‘tadi.
@@ -763,6 +779,10 @@ async def claim_gift(call: types.CallbackQuery, db: Database, bot: Bot):
         await call.answer("Afsuski, siz ulgurmadingiz. Keyingi giftda faolroq bo‘ling!", show_alert=True)
     else:
         await call.answer("Gift faol emas yoki topilmadi.", show_alert=True)
+    # Bildirishnoma ko‘rsatilgach, sovg‘a xabari o‘rniga asosiy menyu ochiladi
+    # (faol VIP sababli olinmagan bo‘lsa, keyin urinib ko‘rish uchun xabar saqlanadi).
+    if status != "vip":
+        await replace_menu_message(call.message, "Asosiy menyu", main_menu())
 
 
 @router.chat_join_request()

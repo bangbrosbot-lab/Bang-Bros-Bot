@@ -15,7 +15,9 @@ from backup import send_backup
 from config import CHANNEL_URL, is_owner
 from db import Database
 from handlers import ads
-from handlers.filters import PERMISSIONS, AdminOnly, has_permission, no_perm_text
+from handlers.filters import (PERMISSIONS, AdminOnly, can_remove_admin, grantable_permissions,
+                              has_permission, no_perm_text)
+from handlers.messaging import deliver_message
 from states import AddVideo, DeleteVideo, Settings, UserAdmin
 from timeutil import fmt_local
 from utils import (delete_quietly, esc, finish_prompt, is_not_modified, money,
@@ -766,40 +768,7 @@ async def user_lookup(m: types.Message, state: FSMContext, db: Database):
     await show_user(m, db, u, actor_id=m.from_user.id, prompt_data=prompt_data)
 
 
-async def show_user(target, db, u, edit=False, actor_id=None, prompt_data=None, notice=None):
-    uid = u["user_id"]
-    vip, friends = await db.vip(uid), await db.referrals_count(uid)
-    perms = db.admin_permissions(uid)
-    is_admin = perms is not None
-    if is_owner(uid):
-        extra = "Holati: Bosh admin"
-    elif is_admin:
-        extra = f"Holati: {admin_level(perms)}"
-    elif vip:
-        extra = f"Holati: Vip obunachi\nMuddati: {fmt_local(u['vip_until'])}"
-    else:
-        extra = "Holati: Oddiy obunachi"
-    username = username_text(u["username"])
-    balance = int(u["balance"] or 0) + int(u["referral_balance"] or 0)
-    text = (f"Foydalanuvchi ma’lumotlari\n\nIsm: {u['name'] or 'Mavjud emas'}\nUsername: {username}\nID: {uid}\n"
-            f"Balans: {money(balance)} so‘m\n{extra}\nDo‘stlar: {friends}\n"
-            f"Bloklangan: {'Ha' if u['blocked'] else 'Yo‘q'}"
-            + (f"\n\n{notice}" if notice else ""))
-    cb = lambda t, d: InlineKeyboardButton(text=t, callback_data=d)  # noqa: E731
-    rows = [[cb("Balans qo‘shish", f"uadd:{uid}"), cb("Balans ayirish", f"usub:{uid}")]]
-    if vip:
-        rows.append([cb("VIP bekor qilish", f"urevoke:{uid}")])
-    elif not is_admin:
-        rows.append([cb("VIP berish", f"uvip:{uid}")])
-    if not is_owner(uid):
-        rows.append([cb("Blokdan olish" if u["blocked"] else "Blocklash", f"ublock:{uid}")])
-        actor_id = actor_id or getattr(getattr(target, "from_user", None), "id", 0)
-        if has_permission(db, actor_id, "admin_manage"):
-            rows.append([cb("Adminlikdan olish", f"uremoveadmin:{uid}") if is_admin
-                         else cb("Admin qilish", f"uadmin:{uid}")])
-    rows.append([cb("Xabar yuborish", f"umsg:{uid}")])
-    rows.append([cb("Orqaga", "idhome")])
-    markup = InlineKeyboardMarkup(inline_keyboard=rows)
+async def _render_card(target, text, markup, edit=False, prompt_data=None):
     try:
         if prompt_data and prompt_data.get("prompt_id"):
             await target.bot.edit_message_text(
@@ -814,6 +783,51 @@ async def show_user(target, db, u, edit=False, actor_id=None, prompt_data=None, 
             raise
 
 
+async def show_user(target, db, u, edit=False, actor_id=None, prompt_data=None, notice=None):
+    uid = u["user_id"]
+    if not actor_id:
+        fu = getattr(target, "from_user", None)
+        # Menyu callbackidan kelganda target — botning o‘z xabari: haqiqiy admin ID si chat ID
+        actor_id = (target.chat.id if fu and getattr(fu, "is_bot", False) and getattr(target, "chat", None)
+                    else getattr(fu, "id", 0))
+    perms = db.admin_permissions(uid)
+    is_admin = perms is not None
+    back = kb.back_kb("idhome")
+    # --- maxsus kartalar: bosh admin / o‘zi / boshqa admin
+    if is_owner(uid):
+        text = "Xo‘jayin axir bu sizqu" if uid == actor_id else "Bu bosh admin iltimos bezovta qilmang!"
+        return await _render_card(target, text, back, edit, prompt_data)
+    if is_admin and uid == actor_id:
+        return await _render_card(target, "Bu siz", back, edit, prompt_data)
+    cb = lambda t, d: InlineKeyboardButton(text=t, callback_data=d)  # noqa: E731
+    username = username_text(u["username"])
+    if is_admin:
+        text = (f"Bu bot admini\n\nIsmi: {u['name'] or 'Mavjud emas'}\nUseri: {username}\nIDsi: {uid}\n"
+                f"Unvoni: {admin_level(perms)}" + (f"\n\n{notice}" if notice else ""))
+        rows = []
+        if can_remove_admin(db, actor_id, uid):  # faqat o‘zi tayinlagan admin (bosh admin — hammasini)
+            rows.append([cb("Adminlikdan olish", f"uremoveadmin:{uid}")])
+        rows.append([cb("Xabar yuborish", f"umsg:{uid}")])
+        rows.append([cb("Orqaga", "idhome")])
+        return await _render_card(target, text, InlineKeyboardMarkup(inline_keyboard=rows), edit, prompt_data)
+    # --- oddiy foydalanuvchi
+    vip, friends = await db.vip(uid), await db.referrals_count(uid)
+    extra = (f"Holati: Vip obunachi\nMuddati: {fmt_local(u['vip_until'])}" if vip else "Holati: Oddiy obunachi")
+    balance = int(u["balance"] or 0) + int(u["referral_balance"] or 0)
+    text = (f"Foydalanuvchi ma’lumotlari\n\nIsm: {u['name'] or 'Mavjud emas'}\nUsername: {username}\nID: {uid}\n"
+            f"Balans: {money(balance)} so‘m\n{extra}\nDo‘stlar: {friends}\n"
+            f"Bloklangan: {'Ha' if u['blocked'] else 'Yo‘q'}"
+            + (f"\n\n{notice}" if notice else ""))
+    rows = [[cb("Balans qo‘shish", f"uadd:{uid}"), cb("Balans ayirish", f"usub:{uid}")]]
+    rows.append([cb("VIP bekor qilish", f"urevoke:{uid}")] if vip else [cb("VIP berish", f"uvip:{uid}")])
+    rows.append([cb("Blokdan olish" if u["blocked"] else "Blocklash", f"ublock:{uid}")])
+    if has_permission(db, actor_id, "admin_manage"):
+        rows.append([cb("Admin qilish", f"uadmin:{uid}")])
+    rows.append([cb("Xabar yuborish", f"umsg:{uid}")])
+    rows.append([cb("Orqaga", "idhome")])
+    await _render_card(target, text, InlineKeyboardMarkup(inline_keyboard=rows), edit, prompt_data)
+
+
 @router.callback_query(F.data.regexp(r"^u(add|sub|vip|msg|block|revoke):"))
 async def user_action(c: types.CallbackQuery, state: FSMContext, db: Database):
     if not await require(c, db, "users", alert=True):
@@ -826,7 +840,9 @@ async def user_action(c: types.CallbackQuery, state: FSMContext, db: Database):
                             ui_chat_id=c.message.chat.id)
     if action == "revoke":
         await db.revoke_vip(uid)
-        await safe_call(lambda: c.bot.send_message(uid, "VIP obunangiz administrator tomonidan bekor qilindi."))
+        await safe_call(lambda: c.bot.send_message(
+            uid, "Sizning Vip obunangiz bekor qilindi.\nSababini bilish uchun «Yordam» bo‘limiga kiring!",
+            reply_markup=kb.help_home_kb()))
         await c.answer("VIP bekor qilindi.")
         return await show_user(c.message, db, await db.user(uid), True, c.from_user.id)
     if action == "block":
@@ -846,7 +862,7 @@ async def user_action(c: types.CallbackQuery, state: FSMContext, db: Database):
                           kb.rows_kb(rows + [("Orqaga", f"uback:{uid}")]))
         return await c.answer()
     prompts = {"add": "Qo‘shiladigan summani yuboring:", "sub": "Ayiriladigan summani yuboring:",
-               "msg": "Foydalanuvchiga yuboriladigan xabarni jo‘nating:"}
+               "msg": "Jo‘natmoqchi bo‘lgan xabaringizni yozing!"}
     await state.set_state(UserAdmin.add_amount if action in ("add", "sub") else UserAdmin.message)
     await show_prompt(c.message, state, prompts[action], kb.back_kb(f"uback:{uid}"))
     await c.answer()
@@ -865,7 +881,8 @@ async def user_vip_days(c: types.CallbackQuery, state: FSMContext, db: Database,
         return await c.answer("Foydalanuvchi topilmadi.", show_alert=True)
     expiry = await db.set_vip(uid, days)
     await safe_call(lambda: bot.send_message(
-        uid, f"Sizga {days} kunlik VIP obuna berildi. Amal qilish muddati: {fmt_local(expiry)}"))
+        uid, f"Sizga {days} kunlik VIP obuna berildi. Amal qilish muddati: {fmt_local(expiry)}",
+        reply_markup=kb.home_kb()))
     await state.clear()
     await state.update_data(ui_message_id=c.message.message_id, ui_chat_id=c.message.chat.id)
     await c.message.edit_text(f"Foydalanuvchiga {days} kunlik VIP berildi.")
@@ -929,7 +946,8 @@ async def user_amount(m: types.Message, state: FSMContext, db: Database, bot: Bo
             return await show_prompt(m, state, "Faqat 1, 7 yoki 30 kun kiriting!", kb.back_kb(f"uback:{uid}"))
         expiry = await db.set_vip(uid, n)
         await safe_call(lambda: bot.send_message(
-            uid, f"Sizga {n} kunlik VIP obuna berildi. Amal qilish muddati: {fmt_local(expiry)}"))
+            uid, f"Sizga {n} kunlik VIP obuna berildi. Amal qilish muddati: {fmt_local(expiry)}",
+            reply_markup=kb.home_kb()))
         await delete_quietly(m)
         await state.clear()
         if d.get("ui_message_id"):
@@ -956,8 +974,13 @@ async def user_balance_confirm(c: types.CallbackQuery, state: FSMContext, db: Da
     if c.data.endswith(":yes"):
         actual = await db.adjust_balance(uid, n if action == "add" else -n, "admin_adjust")
         if actual:
-            await safe_call(lambda: bot.send_message(
-                uid, f"Balansingiz {money(abs(actual))} so‘mga {'oshirildi' if actual > 0 else 'kamaytirildi'}."))
+            if actual > 0:
+                await safe_call(lambda: bot.send_message(
+                    uid, f"Balansingiz {money(actual)} so‘mga oshirildi.", reply_markup=kb.home_kb()))
+            else:
+                await safe_call(lambda: bot.send_message(
+                    uid, f"Balansingizdan {money(abs(actual))} so‘m ayirildi.\n"
+                         "Sababini bilish uchun «Yordam» bo‘limiga kiring!", reply_markup=kb.help_home_kb()))
             note = "Balans yangilandi." if abs(actual) == n else f"Balans yangilandi ({money(abs(actual))} so‘m — mavjud mablag‘ shuncha edi)."
         else:
             note = "Balans o‘zgarmadi (mablag‘ yo‘q)."
@@ -974,7 +997,7 @@ async def user_message(m: types.Message, state: FSMContext, bot: Bot, db: Databa
         return await state.clear()
     d = await state.get_data()
     uid = d["target_uid"]
-    sent = await safe_call(lambda: m.copy_to(uid, protect_content=True))
+    sent = await deliver_message(bot, db, m, uid)
     await delete_quietly(m)
     await state.clear()
     if d.get("ui_message_id"):
@@ -984,9 +1007,12 @@ async def user_message(m: types.Message, state: FSMContext, bot: Bot, db: Databa
 
 
 # ===================================================================== ADMIN TAYINLASH
-async def show_admin_permissions(target, uid, selected):
+async def show_admin_permissions(target, uid, selected, allowed=None):
+    """Faqat tayinlayotgan adminning o‘zida bor huquqlar ko‘rsatiladi (`allowed`)."""
+    allowed = list(PERMISSIONS) if allowed is None else allowed
     rows = [[InlineKeyboardButton(text=f"{'✅' if key in selected else '❌'} {label}",
-                                  callback_data=f"uperm:{uid}:{key}")] for key, label in PERMISSIONS.items()]
+                                  callback_data=f"uperm:{uid}:{key}")]
+            for key, label in PERMISSIONS.items() if key in allowed]
     rows.append([InlineKeyboardButton(text="Orqaga", callback_data=f"uadminback:{uid}"),
                  InlineKeyboardButton(text="Bo‘ldi", callback_data=f"upermdone:{uid}")])
     markup, text = InlineKeyboardMarkup(inline_keyboard=rows), "Admin imkoniyatlarini belgilang:"
@@ -1007,7 +1033,7 @@ async def user_admin_start(c: types.CallbackQuery, state: FSMContext, db: Databa
         return await c.answer("Bosh adminni qayta tayinlab bo‘lmaydi.", show_alert=True)
     await state.update_data(admin_target=uid, admin_permissions=[])
     await state.set_state(UserAdmin.admin_permissions)
-    await show_admin_permissions(c.message, uid, [])
+    await show_admin_permissions(c.message, uid, [], grantable_permissions(db, c.from_user.id))
     await c.answer()
 
 
@@ -1032,10 +1058,13 @@ async def permission_toggle(c: types.CallbackQuery, state: FSMContext, db: Datab
     data = await state.get_data()
     if data.get("admin_target") != int(uid) or key not in PERMISSIONS:
         return await c.answer("Admin tayinlash jarayoni topilmadi.", show_alert=True)
+    allowed = grantable_permissions(db, c.from_user.id)
+    if key not in allowed:
+        return await c.answer("Bu huquq sizda yo‘q, uni bera olmaysiz.", show_alert=True)
     selected = set(data.get("admin_permissions", []))
     selected.symmetric_difference_update({key})
     await state.update_data(admin_permissions=list(selected))
-    await show_admin_permissions(c.message, int(uid), selected)
+    await show_admin_permissions(c.message, int(uid), selected, allowed)
     await c.answer()
 
 
@@ -1067,12 +1096,14 @@ async def admin_confirm(c: types.CallbackQuery, state: FSMContext, db: Database)
         await state.update_data(ui_message_id=c.message.message_id, ui_chat_id=c.message.chat.id)
         await c.answer()
         return await show_user(c.message, db, await db.user(uid), True, c.from_user.id)
-    perms = data.get("admin_permissions", [])
-    await db.set_admin(uid, perms)
+    allowed = grantable_permissions(db, c.from_user.id)
+    perms = [p for p in data.get("admin_permissions", []) if p in allowed]
+    await db.set_admin(uid, perms, appointed_by=c.from_user.id)
     await state.clear()
     await state.update_data(ui_message_id=c.message.message_id, ui_chat_id=c.message.chat.id)
     await safe_call(lambda: c.bot.send_message(
-        uid, f"Siz botga admin etib tayinlandingiz.\nUnvoningiz: {admin_level(perms)}", reply_markup=kb.admin_menu()))
+        uid, f"Siz botga admin etib tayinlandingiz.\nUnvoningiz: {admin_level(perms)}",
+        reply_markup=kb.back_kb("amenu:home", "Bosh menyu")))
     await show_user(c.message, db, await db.user(uid), True, c.from_user.id)
     await c.answer("Admin tayinlandi.")
 
@@ -1084,6 +1115,8 @@ async def remove_admin_ask(c: types.CallbackQuery, db: Database):
     uid = int(c.data.split(":")[1])
     if is_owner(uid):
         return await c.answer("Bosh adminlikni bekor qilib bo‘lmaydi.", show_alert=True)
+    if not can_remove_admin(db, c.from_user.id, uid):
+        return await c.answer("Siz faqat o‘zingiz tayinlagan adminning adminligini ola olasiz.", show_alert=True)
     await c.message.edit_text("Haqiqatdan ham shu foydalanuvchining adminlik huquqlarini bekor qilmoqchimisiz?",
                               reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                                   [InlineKeyboardButton(text="Ha", callback_data=f"uremoveconfirm:{uid}:yes"),
@@ -1102,7 +1135,11 @@ async def remove_admin_confirm(c: types.CallbackQuery, db: Database):
         await c.answer("Bosh admin himoyalangan." if is_owner(uid) else None, show_alert=is_owner(uid))
         return await (show_user(c.message, db, u, True, c.from_user.id) if u
                       else c.message.edit_text("Foydalanuvchi topilmadi."))
+    if not can_remove_admin(db, c.from_user.id, uid):
+        return await c.answer("Siz faqat o‘zingiz tayinlagan adminning adminligini ola olasiz.", show_alert=True)
     await db.remove_admin(uid)
-    await safe_call(lambda: c.bot.send_message(uid, "Adminlik huquqingiz bekor qilindi.", reply_markup=kb.main_menu()))
+    await safe_call(lambda: c.bot.send_message(
+        uid, "Adminlik huquqlaringiz bekor qilindi.\nSababini bilish uchun «Yordam» bo‘limiga kiring!",
+        reply_markup=kb.help_home_kb()))
     await show_user(c.message, db, await db.user(uid), True, c.from_user.id)
     await c.answer()
