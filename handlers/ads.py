@@ -233,13 +233,51 @@ async def broadcast_prepare(c: types.CallbackQuery, state: FSMContext):
     await c.answer()
 
 
-async def _run_broadcast(bot, ids, src_chat, src_msg, markup, report_chat, report_msg):
-    ok, bad = await mass_send(ids, lambda uid: push_copy(
-        bot, uid, src_chat, src_msg, reply_markup=markup, protect_content=True), per_second=15)
+async def _run_broadcast(bot, ids, src_chat, src_msg, markup, report_chat, report_msg,
+                         mode, special_channel_id=None):
+    """Reklamani tanlangan auditoriyaga yuboradi va yakuniy hisobotni chiqaradi."""
+    ok = bad = 0
+    if mode in ("vip", "ordinary", "all"):
+        ok, bad = await mass_send(
+            ids,
+            lambda uid: push_copy(
+                bot, uid, src_chat, src_msg,
+                reply_markup=markup, protect_content=True
+            ),
+            per_second=15
+        )
+
+    channel_sent = False
+    if mode in ("special", "all") and special_channel_id is not None:
+        try:
+            await bot.copy_message(
+                special_channel_id, src_chat, src_msg,
+                reply_markup=markup, protect_content=True
+            )
+            channel_sent = True
+        except Exception:
+            log.exception("Maxsus kanalga reklama yuborilmadi")
+
     await safe_call(lambda: bot.delete_message(src_chat, src_msg))
+
+    if mode == "special":
+        result = ("Reklama maxsus kanalga yuborildi." if channel_sent
+                  else "Reklamani maxsus kanalga yuborib bo‘lmadi.")
+    elif mode == "vip":
+        result = ("Reklama barcha VIP foydalanuvchilarga yuborildi.\n"
+                  f"Yuborildi: {ok}\nYuborilmadi: {bad}")
+    elif mode == "ordinary":
+        result = ("Reklama barcha oddiy foydalanuvchilarga yuborildi.\n"
+                  f"Yuborildi: {ok}\nYuborilmadi: {bad}")
+    else:
+        result = ("Reklama barcha foydalanuvchilarga hamda maxsus kanalga yuborildi.\n"
+                  f"Yuborildi: {ok}\nYuborilmadi: {bad}\n"
+                  f"Maxsus kanal: {'Yuborildi' if channel_sent else 'Yuborilmadi'}")
+
     await safe_call(lambda: bot.edit_message_text(
-        f"Reklama tarqatish yakunlandi.\nJami: {len(ids)}\nYuborildi: {ok}\nYuborilmadi: {bad}",
-        chat_id=report_chat, message_id=report_msg))
+        result, chat_id=report_chat, message_id=report_msg,
+        reply_markup=kb.back_kb("amenu:desk")
+    ))
 
 
 @router.callback_query(F.data.startswith("basend:"))
@@ -249,34 +287,49 @@ async def broadcast_send(c: types.CallbackQuery, state: FSMContext, db: Database
         await state.set_state(Broadcast.content)
         await broadcast_preview(c, state)
         return await c.answer("Orqaga qaytdingiz.")
+
     if not d.get("source_message"):
         await state.clear()
         return await c.answer("Seans tugagan. Reklamani qaytadan boshlang.", show_alert=True)
+
     mode = d.get("audience", "all")
     src_chat, src_msg = d["source_chat"], d["source_message"]
+
+    special_channel_id = None
+    if mode in ("special", "all"):
+        channel = await db.special_channel()
+        if not channel:
+            await c.answer("Maxsus kanal sozlanmagan.", show_alert=True)
+            return
+        special_channel_id = channel["channel_id"]
+
     campaign_id = None
     if d.get("like_options"):
-        campaign_id = await db.create_ad_campaign(src_chat, src_msg, d.get("url_buttons", []),
-                                                  d["like_options"], d.get("like_rows", []))
+        campaign_id = await db.create_ad_campaign(
+            src_chat, src_msg, d.get("url_buttons", []),
+            d["like_options"], d.get("like_rows", [])
+        )
     markup = ad_markup(d, campaign_id)
+
+    ids = await db.all_user_ids(mode) if mode in ("vip", "ordinary", "all") else []
+
+    # FSMni darhol tozalash takroriy bosib yuborishni oldini oladi.
+    await state.clear()
     if mode == "special":
-        ch = await db.special_channel()
-        if not ch:
-            await finish_prompt(c.message, state, "Maxsus kanal sozlanmagan.")
-            return await c.answer("Maxsus kanal sozlanmagan.", show_alert=True)
-        await state.clear()
-        try:
-            await bot.copy_message(ch["channel_id"], src_chat, src_msg, reply_markup=markup, protect_content=True)
-        except Exception as e:
-            await c.message.edit_text(f"Yuborilmadi: {e}")
-            return await c.answer()
-        await safe_call(lambda: bot.delete_message(src_chat, src_msg))
-        await c.message.edit_text("Reklama maxsus kanalga yuborildi.")
-        return await c.answer()
-    ids = await db.all_user_ids(mode)
-    await state.clear()  # ikki marta bosilsa, ikki marta ketmasligi uchun
-    await c.message.edit_text(f"Reklama tarqatilmoqda… Jami: {len(ids)}. Tugagach shu yerda natija chiqadi.")
-    spawn(_run_broadcast(bot, ids, src_chat, src_msg, markup, c.message.chat.id, c.message.message_id))
+        progress = "Reklama maxsus kanalga yuborilmoqda…"
+    elif mode == "vip":
+        progress = f"Reklama VIP foydalanuvchilarga yuborilmoqda… Jami: {len(ids)}"
+    elif mode == "ordinary":
+        progress = f"Reklama oddiy foydalanuvchilarga yuborilmoqda… Jami: {len(ids)}"
+    else:
+        progress = (f"Reklama barcha foydalanuvchilarga va maxsus kanalga "
+                    f"yuborilmoqda… Jami: {len(ids)}")
+
+    await c.message.edit_text(progress)
+    spawn(_run_broadcast(
+        bot, ids, src_chat, src_msg, markup,
+        c.message.chat.id, c.message.message_id, mode, special_channel_id
+    ))
     await c.answer()
 
 
