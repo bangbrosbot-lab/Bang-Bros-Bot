@@ -84,25 +84,55 @@ def ad_markup(data, campaign_id=None, counts=None):
     return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
+def preview_markup(data):
+    """Reklama va uni boshqarish tugmalari bitta xabarda ko‘rinadi."""
+    rows = []
+    content_markup = ad_markup(data)
+    if content_markup:
+        rows.extend(content_markup.inline_keyboard)
+    rows.append([InlineKeyboardButton(
+        text="Tugmalarni o‘chirish" if data.get("url_buttons") else "Tugmalar qo‘shish",
+        callback_data="bcurls:remove" if data.get("url_buttons") else "bcurls:add")])
+    rows.append([InlineKeyboardButton(
+        text="Like tugmalarni o‘chirish" if data.get("like_rows") else "Like tugmalar qo‘shish",
+        callback_data="bclike:remove" if data.get("like_rows") else "bclike:add")])
+    rows.append([InlineKeyboardButton(text="Reklama tayyor", callback_data="bcdone"),
+                 InlineKeyboardButton(text="Reklamani bekor qilish", callback_data="bccancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def broadcast_prompt(target, state, text, reply_markup=None):
+    """Tahrirlash bo‘yicha ko‘rsatmani alohida boshqaruv xabarida yuritadi."""
+    d = await state.get_data()
+    mid, chat_id = d.get("prompt_id"), d.get("prompt_chat_id")
+    if mid and chat_id:
+        try:
+            return await target.bot.edit_message_text(
+                text, chat_id=chat_id, message_id=mid, reply_markup=reply_markup)
+        except Exception as e:
+            if is_not_modified(e):
+                return None
+    msg = await target.bot.send_message(target.chat.id if isinstance(target, types.Message)
+                                        else target.message.chat.id,
+                                        text, reply_markup=reply_markup)
+    await state.update_data(prompt_id=msg.message_id, prompt_chat_id=msg.chat.id)
+    return msg
+
+
 async def broadcast_preview(target, state):
     msg = target.message if isinstance(target, types.CallbackQuery) else target
     d = await state.get_data()
     try:
-        await msg.bot.edit_message_reply_markup(chat_id=d["source_chat"], message_id=d["source_message"],
-                                                reply_markup=ad_markup(d))
+        await msg.bot.edit_message_reply_markup(
+            chat_id=d["source_chat"], message_id=d["source_message"],
+            reply_markup=preview_markup(d))
     except Exception as e:
         if not is_not_modified(e):
             log.debug("Preview markup: %s", e)
-    controls = [
-        [InlineKeyboardButton(text="Tugmalarni o‘chirish" if d.get("url_buttons") else "Tugmalar qo‘shish",
-                              callback_data="bcurls:remove" if d.get("url_buttons") else "bcurls:add")],
-        [InlineKeyboardButton(text="Like tugmalarni o‘chirish" if d.get("like_rows") else "Like tugmalar qo‘shish",
-                              callback_data="bclike:remove" if d.get("like_rows") else "bclike:add")],
-        [InlineKeyboardButton(text="Reklama tayyor", callback_data="bcdone"),
-         InlineKeyboardButton(text="Reklamani bekor qilish", callback_data="bccancel")],
-        [InlineKeyboardButton(text="Orqaga", callback_data="amenu:desk")]]
-    await show_prompt(msg, state, "Reklama ko‘rinishi tayyor. Kerakli tugmalarni qo‘shing yoki reklama tayyor tugmasini bosing.",
-                      InlineKeyboardMarkup(inline_keyboard=controls))
+    # Ko‘rsatma xabarini olib tashlaymiz: reklama va boshqaruv tugmalari bitta xabarda qoladi.
+    if d.get("prompt_id") and d.get("prompt_chat_id"):
+        await safe_call(lambda: msg.bot.delete_message(d["prompt_chat_id"], d["prompt_id"]))
+        await state.update_data(prompt_id=None, prompt_chat_id=None)
 
 
 async def start_broadcast(m, state, db):
@@ -136,8 +166,11 @@ async def broadcast_urls(c: types.CallbackQuery, state: FSMContext):
         await state.update_data(url_buttons=[])
         await broadcast_preview(c, state)
         return await c.answer("URL tugmalar o‘chirildi.")
+    d = await state.get_data()
+    await safe_call(lambda: c.bot.edit_message_reply_markup(
+        chat_id=d["source_chat"], message_id=d["source_message"], reply_markup=None))
     await state.set_state(Broadcast.button_url)
-    await show_prompt(c.message, state,
+    await broadcast_prompt(c, state,
                       "Menga bitta xabarda URL-tugmalar ro‘yxatini yuboring. Iltimos, quyidagi formatga amal qiling:\n\n"
                       "Tugma 1 - http://example1.com\nTugma 2 - http://example2.com\n\n"
                       "Bitta qatorga uchtagacha tugma qo‘shish uchun | belgisidan foydalaning. Masalan:\n\n"
@@ -154,8 +187,11 @@ async def broadcast_likes(c: types.CallbackQuery, state: FSMContext):
         await state.update_data(like_rows=[], like_options=[])
         await broadcast_preview(c, state)
         return await c.answer("Like tugmalar o‘chirildi.")
+    d = await state.get_data()
+    await safe_call(lambda: c.bot.edit_message_reply_markup(
+        chat_id=d["source_chat"], message_id=d["source_message"], reply_markup=None))
     await state.set_state(Broadcast.like_layout)
-    await show_prompt(c.message, state,
+    await broadcast_prompt(c, state,
                       "Iltimos like tugma ko‘rinishining kiriting!\nNamunalar:\n\n"
                       "Stickerli: 😀/😊|🥰/🤭\nMatnli: Ha/Yo‘q|Balkim\n\n"
                       "Tugmalarni yonma-yon chiqarish uchun / belgisidan foydalaning. Masalan: 😀/😁 — bitta qatorda 2 ta tugma.\n"
@@ -203,8 +239,11 @@ async def broadcast_like_layout(m: types.Message, state: FSMContext):
 
 @router.callback_query(F.data == "bcdone")
 async def broadcast_done(c: types.CallbackQuery, state: FSMContext):
+    d = await state.get_data()
+    await safe_call(lambda: c.bot.edit_message_reply_markup(
+        chat_id=d["source_chat"], message_id=d["source_message"], reply_markup=None))
     await state.set_state(Broadcast.audience)
-    await show_prompt(c.message, state, "Auditoriyani tanlang!", kb.rows_kb([
+    await broadcast_prompt(c, state, "Auditoriyani tanlang!", kb.rows_kb([
         ("VIP foydalanuvchilarga", "ba:vip"), ("Oddiy foydalanuvchilarga", "ba:ordinary"),
         ("Maxsus kanalga", "ba:special"), ("Hammasiga", "ba:all"), ("Orqaga", "bcback")]))
     await c.answer()
