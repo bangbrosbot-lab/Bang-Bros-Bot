@@ -22,25 +22,48 @@ def home_callback(db: Database, uid: int) -> str:
     return "amenu:home" if (is_owner(uid) or db.is_admin(uid)) else "umenu:home"
 
 
+_CAPTIONABLE = {"photo", "video", "animation", "document", "audio", "voice"}
+
+
+def _cut(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 async def deliver_message(bot: Bot, db: Database, m: types.Message, to_uid: int) -> bool:
-    """`m` ni (matn/rasm/video...) `to_uid` ga «Sizga xabar keldi.» + [Javob yozish | Bosh menyu] bilan yuboradi."""
+    """Xabarni BITTA xabar qilib yuboradi:
+    «Sizga xabar keldi.» (+ adminga: Ism/Id/User) + «Xabar: …»; rasm/video bo‘lsa — shu media tagiga (caption).
+    Tagida [Javob yozish | Bosh menyu]."""
     sender = m.from_user
     await clear_previous(bot, to_uid)  # yangi xabar eskilarini o‘chiradi
-    header = INCOMING
+    lines = [INCOMING]
     if is_owner(to_uid) or db.is_admin(to_uid):
-        header += (f"\n\nKimdan: {sender.full_name}\nUser: {username_text(sender.username)}\nID: {sender.id}")
+        lines += [f"Ism: {sender.full_name}", f"Id: {sender.id}", f"User: {username_text(sender.username)}"]
+    head = "\n".join(lines)
+
+    def markup(header_id: int = 0) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="Javob yozish", callback_data=f"msgreply:{sender.id}:{header_id}"),
+            InlineKeyboardButton(text="Bosh menyu", callback_data=home_callback(db, to_uid))]])
+
     try:
-        head = await bot.send_message(to_uid, header)
+        if m.text is not None:
+            await bot.send_message(to_uid, _cut(f"{head}\nXabar: {m.text}", 4000),
+                                   reply_markup=markup(), protect_content=True)
+            return True
+        if m.content_type in _CAPTIONABLE:
+            caption = f"{head}\nXabar: {m.caption}" if m.caption else head
+            await bot.copy_message(to_uid, m.chat.id, m.message_id, caption=_cut(caption, 1000),
+                                   reply_markup=markup(), protect_content=True)
+            return True
+        # Stiker, dumaloq video va h.k. — izoh qo‘yib bo‘lmaydi: sarlavha alohida chiqadi
+        head_msg = await bot.send_message(to_uid, head)
+        try:
+            await m.copy_to(to_uid, reply_markup=markup(head_msg.message_id), protect_content=True)
+            return True
+        except TelegramAPIError:
+            await safe_call(lambda: bot.delete_message(to_uid, head_msg.message_id))
+            return False
     except TelegramAPIError:
-        return False
-    markup = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="Javob yozish", callback_data=f"msgreply:{sender.id}:{head.message_id}"),
-        InlineKeyboardButton(text="Bosh menyu", callback_data=home_callback(db, to_uid))]])
-    try:
-        await m.copy_to(to_uid, reply_markup=markup, protect_content=True)
-        return True
-    except TelegramAPIError:
-        await safe_call(lambda: bot.delete_message(to_uid, head.message_id))
         return False
 
 
