@@ -486,6 +486,9 @@ class Database:
         """Admin bo‘lmasa None, aks holda huquqlar ro‘yxati (xotiradan — tezkor)."""
         return self._admins.get(uid)
 
+    def admin_ids(self) -> list[int]:
+        return list(self._admins)
+
     def is_admin(self, uid) -> bool:
         return uid in self._admins
 

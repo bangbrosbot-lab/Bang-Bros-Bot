@@ -4,6 +4,7 @@ import logging
 
 from db import Database
 from keyboards import rows_kb
+from pushes import push
 from timeutil import fmt_local
 from utils import safe_call
 
@@ -20,7 +21,7 @@ async def send_vip_expiry_notices(bot, db: Database) -> int:
         text = (f"Diqqat! VIP obunangiz tugashiga {left} qoldi.\n"
                 f"Tugash vaqti: {fmt_local(r['vip_until'])}\n\n"
                 "Videolarni uzilishsiz tomosha qilish uchun obunani hozirdan uzaytiring.")
-        await safe_call(lambda uid=r["user_id"]: bot.send_message(
+        await safe_call(lambda uid=r["user_id"]: push(bot, 
             uid, text, reply_markup=rows_kb([("VIP olish", "vipnotice")])))
         await db.mark_vip_notified(r["user_id"], r["vip_until"])  # yetkazilmasa ham qayta urinmaymiz
         sent += 1

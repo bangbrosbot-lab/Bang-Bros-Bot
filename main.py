@@ -12,6 +12,7 @@ from db import Database
 from handlers.admin import menu_router, router as admin_router
 from handlers.ads import router as ads_router
 from handlers.messaging import router as messaging_router
+from pushes import TrackingBot
 from handlers.user import router as user_router
 from middlewares import SubscriptionMiddleware, ThrottleMiddleware, WorkflowCleanupMiddleware
 from notifications import vip_notice_loop
@@ -57,7 +58,7 @@ async def backup_loop(bot: Bot, db: Database) -> None:
 async def main() -> None:
     logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO),
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=None))
+    bot = TrackingBot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=None))
     db = Database(DB_PATH)
     await db.connect()
 

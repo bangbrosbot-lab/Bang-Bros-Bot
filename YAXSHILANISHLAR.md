@@ -155,3 +155,5 @@ Username bo‘lmasa «@mavjud emas» emas, faqat «Mavjud emas» yoziladi; bor b
 6. **Xabar yuborish (`handlers/messaging.py`):** «Sizga xabar keldi.» + [Javob yozish | Bosh menyu]; javob zanjiri har ikki tomonda ishlaydi.
 7. **Bildirishnomalar:** admin/VIP/balans xabarlariga «Bosh menyu», bekor qilish xabarlariga «Yordam | Bosh menyu» tugmalari. Bloklanganlar uchun «Yordam» tugmasi ishlaydi.
 8. **Chek:** «To‘lov chekingiz adminga yuborildi» xabari tasdiq/rad etilgach o‘chadi. **Gift:** olingach asosiy menyu ochiladi.
+9. **Gift:** faqat oddiy foydalanuvchilarga (adminlar, bosh admin ham, chiqarib tashlangan; adminlar qatnasha ham olmaydi); yangi xabar matni.
+10. **Eski xabarlarni o‘chirish (`pushes.py`):** botdan kelgan yangi xabar shu chatdagi botning eski matnli xabarlarini o‘chiradi. Rasm/video/chek rasmlari o‘chmaydi.
