@@ -375,9 +375,15 @@ async def gift_winners_count(m: types.Message, state: FSMContext):
 
 
 async def _run_gift(bot, ids, body, markup, report_chat, report_msg):
-    ok, _ = await mass_send(ids, lambda uid: push(bot, uid, body, reply_markup=markup), per_second=15)
-    await safe_call(lambda: bot.edit_message_text(
-        f"Gift e’lon qilindi. Yetkazildi: {ok} ta foydalanuvchi.", chat_id=report_chat, message_id=report_msg))
+    ok, bad = await mass_send(ids, lambda uid: push(bot, uid, body, reply_markup=markup), per_second=15)
+    text = f"Gift e’lon qilindi.\nYuborildi: {ok} ta foydalanuvchi"
+    if bad:
+        text += f"\nYuborilmadi: {bad} ta foydalanuvchi"
+    home = kb.back_kb("amenu:home", "Bosh menyu")
+    shown = await safe_call(lambda: bot.edit_message_text(
+        text, chat_id=report_chat, message_id=report_msg, reply_markup=home))
+    if not shown:  # g‘oliblar ro‘yxati chiqib, xabar allaqachon o‘chirilgan bo‘lishi mumkin
+        await safe_call(lambda: bot.send_message(report_chat, text, reply_markup=home))
 
 
 @router.callback_query(F.data.startswith("giftconfirm:"))
@@ -406,5 +412,6 @@ async def gift_confirm(c: types.CallbackQuery, state: FSMContext, db: Database, 
     staff = {ADMIN_ID, *db.admin_ids()}
     ids = [u for u in await db.all_user_ids("ordinary" if kind == "vip" else "all") if u not in staff]
     await c.message.edit_text(f"Gift e’lon qilinmoqda… Jami: {len(ids)}. Tugagach shu yerda natija chiqadi.")
+    await db.set_gift_report(gid, c.message.chat.id, c.message.message_id)
     spawn(_run_gift(bot, ids, body, markup, c.message.chat.id, c.message.message_id))
     await c.answer()

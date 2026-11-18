@@ -754,6 +754,33 @@ async def refdecline(call: types.CallbackQuery, db: Database):
 
 
 # ------------------------------------------------------------------------ gift
+async def _send_gift_winners(bot: Bot, db: Database, gid: int):
+    """G‘oliblar to‘lgach: «Gift e’lon qilindi» xabari o‘chiriladi va g‘oliblar ro‘yxati chiqadi."""
+    g = await db.gift(gid)
+    entries = []
+    for i, w in enumerate(await db.gift_winners(gid), 1):
+        entries.append(f"{i} - G‘olib\nIsmi: {w['name'] or 'Mavjud emas'}\nIDsi: {w['user_id']}\n"
+                       f"Useri: {username_text(w['username'])}")
+    chunks, cur = [], "Gift g‘oliblari"
+    for e in entries:  # Telegram 4096 belgi chegarasi uchun bo‘laklab yuboriladi
+        if len(cur) + len(e) + 2 > 3900:
+            chunks.append(cur)
+            cur = "Gift g‘oliblari (davomi)"
+        cur += "\n\n" + e
+    chunks.append(cur)
+    home = back_kb("amenu:home", "Bosh menyu")
+    targets = [ADMIN_ID]
+    if g and g["report_chat"] and g["report_chat"] != ADMIN_ID:
+        targets.append(g["report_chat"])  # giftni e’lon qilgan admin ham ko‘radi
+    for chat in targets:
+        if g and g["report_chat"] == chat and g["report_msg"]:
+            report_msg = g["report_msg"]
+            await safe_call(lambda: bot.delete_message(chat, report_msg))  # e’lon xabari o‘chadi
+        for n, text in enumerate(chunks):
+            markup = home if n == len(chunks) - 1 else None
+            await safe_call(lambda text=text, markup=markup: bot.send_message(chat, text, reply_markup=markup))
+
+
 @router.callback_query(F.data.startswith("claimgift:"))
 async def claim_gift(call: types.CallbackQuery, db: Database, bot: Bot):
     u = await db.user(call.from_user.id)
@@ -770,10 +797,7 @@ async def claim_gift(call: types.CallbackQuery, db: Database, bot: Bot):
             msg = f"Tabriklaymiz! {money(g['amount'])} so‘m sovg‘a balansingizga qo‘shildi."
         await call.answer(msg, show_alert=True)
         if last:
-            lines = ["Gift g‘oliblari:"]
-            for i, w in enumerate(await db.gift_winners(gid), 1):
-                lines.append(f"{i}. {w['name']} | {username_text(w['username'])} | {w['user_id']}")
-            await safe_call(lambda: bot.send_message(ADMIN_ID, "\n".join(lines)))
+            await _send_gift_winners(bot, db, gid)
     elif status == "vip":
         await call.answer("Sizda allaqachon faol VIP obuna bor.", show_alert=True)
     elif status == "already":
