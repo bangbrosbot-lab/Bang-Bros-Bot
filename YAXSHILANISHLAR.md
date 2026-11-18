@@ -157,3 +157,5 @@ Username bo‘lmasa «@mavjud emas» emas, faqat «Mavjud emas» yoziladi; bor b
 8. **Chek:** «To‘lov chekingiz adminga yuborildi» xabari tasdiq/rad etilgach o‘chadi. **Gift:** olingach asosiy menyu ochiladi.
 9. **Gift:** faqat oddiy foydalanuvchilarga (adminlar, bosh admin ham, chiqarib tashlangan; adminlar qatnasha ham olmaydi); yangi xabar matni.
 10. **Eski xabarlarni o‘chirish (`pushes.py`):** botdan kelgan yangi xabar shu chatdagi botning eski matnli xabarlarini o‘chiradi. Rasm/video/chek rasmlari o‘chmaydi.
+11. **«Sizga xabar keldi»:** bitta xabar ichida (matn: «Xabar: …», rasm/video: shu media tagida; adminga Ism/Id/User ham). Stiker kabi izohsiz turlarda sarlavha alohida chiqadi.
+12. **Bosh menyu yagona:** chatda yangi bosh menyu (foydalanuvchi yoki admin paneli) ochilsa, oldingisi o‘chiriladi (`pushes.py`).

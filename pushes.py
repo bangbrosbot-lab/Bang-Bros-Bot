@@ -17,6 +17,16 @@ log = logging.getLogger(__name__)
 _MAX_PER_CHAT = 60
 _MAX_CHATS = 50000
 _tracked: dict[int, list[int]] = {}
+_menus: dict[int, int] = {}  # chat_id -> hozir ochiq turgan bosh menyu xabari (har chatda faqat bitta)
+_MENU_MARKERS = {"umenu:cabinet", "amenu:desk"}  # foydalanuvchi / admin bosh menyusini aniqlash belgilari
+
+
+def is_menu_markup(markup) -> bool:
+    try:
+        return any(getattr(b, "callback_data", None) in _MENU_MARKERS
+                   for row in markup.inline_keyboard for b in row)
+    except Exception:
+        return False
 
 
 def track(chat_id: int, message_id: int) -> None:
@@ -35,9 +45,24 @@ def forget(chat_id: int, message_id: int) -> None:
 
 
 class TrackingBot(Bot):
+    async def _register_menu(self, chat_id: int, message_id: int) -> None:
+        """Yangi bosh menyu ochilsa, oldingisi o‘chiriladi."""
+        old = _menus.get(chat_id)
+        _menus[chat_id] = message_id
+        if old and old != message_id:
+            try:
+                await self.delete_message(chat_id, old)
+            except Exception:
+                pass
+            forget(chat_id, old)
+
     async def __call__(self, method, *args, **kwargs):
         result = await super().__call__(method, *args, **kwargs)
         try:
+            markup = getattr(method, "reply_markup", None)
+            if markup is not None and is_menu_markup(markup):
+                if isinstance(result, Message) and result.chat.type == "private":
+                    await self._register_menu(result.chat.id, result.message_id)  # yuborilgan/tahrirlangan
             if isinstance(method, SendMessage) and isinstance(result, Message) and result.chat.type == "private":
                 track(result.chat.id, result.message_id)
             elif isinstance(method, CopyMessage) and isinstance(method.chat_id, int) and method.chat_id > 0:
@@ -54,6 +79,8 @@ async def clear_previous(bot: Bot, chat_id: int) -> None:
     ids = _tracked.pop(chat_id, None)
     if not ids:
         return
+    if _menus.get(chat_id) in ids:
+        _menus.pop(chat_id, None)
     for i in range(0, len(ids), 100):
         chunk = ids[i:i + 100]
         try:
