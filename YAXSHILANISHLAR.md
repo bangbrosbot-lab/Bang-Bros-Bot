@@ -159,3 +159,4 @@ Username bo‘lmasa «@mavjud emas» emas, faqat «Mavjud emas» yoziladi; bor b
 10. **Eski xabarlarni o‘chirish (`pushes.py`):** botdan kelgan yangi xabar shu chatdagi botning eski matnli xabarlarini o‘chiradi. Rasm/video/chek rasmlari o‘chmaydi.
 11. **«Sizga xabar keldi»:** bitta xabar ichida (matn: «Xabar: …», rasm/video: shu media tagida; adminga Ism/Id/User ham). Stiker kabi izohsiz turlarda sarlavha alohida chiqadi.
 12. **Bosh menyu yagona:** chatda yangi bosh menyu (foydalanuvchi yoki admin paneli) ochilsa, oldingisi o‘chiriladi (`pushes.py`).
+13. **Gift natijasi:** «Yuborildi: N» (yetkazilmagan bo‘lsa «Yuborilmadi: M») + «Bosh menyu». G‘oliblar to‘lgach e’lon xabari o‘chib, «N - G‘olib / Ismi / IDsi / Useri» ro‘yxati chiqadi.

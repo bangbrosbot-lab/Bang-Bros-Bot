@@ -58,6 +58,8 @@ MIGRATIONS = [
     ("topups", "user_notice_msg", "INTEGER"),
     ("admins", "permissions", "TEXT DEFAULT '[]'"),
     ("admins", "appointed_by", "INTEGER"),  # adminni kim tayinlagan
+    ("gifts", "report_chat", "INTEGER"),  # «Gift e’lon qilindi» xabari joylashgan chat
+    ("gifts", "report_msg", "INTEGER"),  # va xabar ID si (g‘oliblar chiqqach o‘chiriladi)
     ("channels", "title", "TEXT"),
     ("users", "vip_notified", "TEXT"),  # qaysi vip_until uchun eslatma yuborilgan
     ("users", "vip_notify_hours", "INTEGER"),  # tugashidan necha soat oldin eslatish (1 yoki 24)
@@ -550,6 +552,12 @@ class Database:
                                 (iso(expiry), self._notify_hours(expiry), uid))
             last = g["claimed"] + 1 >= g["winners_limit"]
         return "won", g, last
+
+    async def gift(self, gid):
+        return await self._one("SELECT * FROM gifts WHERE id=?", (gid,))
+
+    async def set_gift_report(self, gid, chat_id, message_id):
+        await self._exec("UPDATE gifts SET report_chat=?,report_msg=? WHERE id=?", (chat_id, message_id, gid))
 
     async def gift_winners(self, gid):
         return await self._all(
