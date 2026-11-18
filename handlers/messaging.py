@@ -8,6 +8,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from config import is_owner
 from db import Database
+from pushes import clear_previous
 from states import Reply
 from utils import delete_quietly, safe_call, username_text
 
@@ -24,6 +25,7 @@ def home_callback(db: Database, uid: int) -> str:
 async def deliver_message(bot: Bot, db: Database, m: types.Message, to_uid: int) -> bool:
     """`m` ni (matn/rasm/video...) `to_uid` ga «Sizga xabar keldi.» + [Javob yozish | Bosh menyu] bilan yuboradi."""
     sender = m.from_user
+    await clear_previous(bot, to_uid)  # yangi xabar eskilarini o‘chiradi
     header = INCOMING
     if is_owner(to_uid) or db.is_admin(to_uid):
         header += (f"\n\nKimdan: {sender.full_name}\nUser: {username_text(sender.username)}\nID: {sender.id}")

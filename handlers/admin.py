@@ -18,6 +18,7 @@ from handlers import ads
 from handlers.filters import (PERMISSIONS, AdminOnly, can_remove_admin, grantable_permissions,
                               has_permission, no_perm_text)
 from handlers.messaging import deliver_message
+from pushes import push
 from states import AddVideo, DeleteVideo, Settings, UserAdmin
 from timeutil import fmt_local
 from utils import (delete_quietly, esc, finish_prompt, is_not_modified, money,
@@ -719,7 +720,7 @@ async def topup_approve(c: types.CallbackQuery, state: FSMContext, db: Database,
     if r["user_notice_chat"] and r["user_notice_msg"]:
         await safe_call(lambda: bot.delete_message(r["user_notice_chat"], r["user_notice_msg"]))
     user_text = f"To‘lov cheki tasdiqlandi, Hisobingiz {money(r['amount'])} so‘mga to‘ldirildi."
-    await safe_call(lambda: bot.send_message(r["user_id"], user_text,
+    await safe_call(lambda: push(bot, r["user_id"], user_text,
         reply_markup=kb.back_kb("umenu:home", "Asosiy menyu")))
     await _admin_topup_result(c, "To‘lov so‘rovi tasdiqlandi.")
     await c.answer("To‘lov tasdiqlandi.")
@@ -740,7 +741,7 @@ async def topup_reject(c: types.CallbackQuery, state: FSMContext, db: Database, 
     user_kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="Yordam", callback_data="umenu:help"),
         InlineKeyboardButton(text="Bosh menyu", callback_data="umenu:home")]])
-    await safe_call(lambda: bot.send_message(r["user_id"],
+    await safe_call(lambda: push(bot, r["user_id"],
         "To‘lovingiz rad etildi.\n\nSababini bilish uchun yordam bo‘limidan foydalaning!",
         reply_markup=user_kb))
     await _admin_topup_result(c, "To‘lov so‘rovi rad etildi.")
@@ -840,7 +841,7 @@ async def user_action(c: types.CallbackQuery, state: FSMContext, db: Database):
                             ui_chat_id=c.message.chat.id)
     if action == "revoke":
         await db.revoke_vip(uid)
-        await safe_call(lambda: c.bot.send_message(
+        await safe_call(lambda: push(c.bot, 
             uid, "Sizning Vip obunangiz bekor qilindi.\nSababini bilish uchun «Yordam» bo‘limiga kiring!",
             reply_markup=kb.help_home_kb()))
         await c.answer("VIP bekor qilindi.")
@@ -880,7 +881,7 @@ async def user_vip_days(c: types.CallbackQuery, state: FSMContext, db: Database,
     if not u:
         return await c.answer("Foydalanuvchi topilmadi.", show_alert=True)
     expiry = await db.set_vip(uid, days)
-    await safe_call(lambda: bot.send_message(
+    await safe_call(lambda: push(bot, 
         uid, f"Sizga {days} kunlik VIP obuna berildi. Amal qilish muddati: {fmt_local(expiry)}",
         reply_markup=kb.home_kb()))
     await state.clear()
@@ -918,12 +919,12 @@ async def user_block_confirm(c: types.CallbackQuery, db: Database, bot: Bot):
     blocking = not bool(u["blocked"])
     await db.set_user_block(uid, blocking)
     if blocking:
-        await safe_call(lambda: bot.send_message(
+        await safe_call(lambda: push(bot, 
             uid, "Siz botdan butunlay blocklandingiz. Sababini bilmoqchi bo‘lsangiz Yordam bo‘limidan adminga murojaat qiling.",
             reply_markup=kb.blocked_menu()))
         await show_user(c.message, db, await db.user(uid), True, c.from_user.id)
     else:
-        await safe_call(lambda: bot.send_message(
+        await safe_call(lambda: push(bot, 
             uid, "Siz blockdan ozod etildingiz, endi erkin foydalanishingiz mumkin.", reply_markup=kb.main_menu()))
         await show_user(c.message, db, await db.user(uid), True, c.from_user.id)
     await c.answer()
@@ -945,7 +946,7 @@ async def user_amount(m: types.Message, state: FSMContext, db: Database, bot: Bo
         if n not in (1, 7, 30):
             return await show_prompt(m, state, "Faqat 1, 7 yoki 30 kun kiriting!", kb.back_kb(f"uback:{uid}"))
         expiry = await db.set_vip(uid, n)
-        await safe_call(lambda: bot.send_message(
+        await safe_call(lambda: push(bot, 
             uid, f"Sizga {n} kunlik VIP obuna berildi. Amal qilish muddati: {fmt_local(expiry)}",
             reply_markup=kb.home_kb()))
         await delete_quietly(m)
@@ -975,10 +976,10 @@ async def user_balance_confirm(c: types.CallbackQuery, state: FSMContext, db: Da
         actual = await db.adjust_balance(uid, n if action == "add" else -n, "admin_adjust")
         if actual:
             if actual > 0:
-                await safe_call(lambda: bot.send_message(
+                await safe_call(lambda: push(bot, 
                     uid, f"Balansingiz {money(actual)} so‘mga oshirildi.", reply_markup=kb.home_kb()))
             else:
-                await safe_call(lambda: bot.send_message(
+                await safe_call(lambda: push(bot, 
                     uid, f"Balansingizdan {money(abs(actual))} so‘m ayirildi.\n"
                          "Sababini bilish uchun «Yordam» bo‘limiga kiring!", reply_markup=kb.help_home_kb()))
             note = "Balans yangilandi." if abs(actual) == n else f"Balans yangilandi ({money(abs(actual))} so‘m — mavjud mablag‘ shuncha edi)."
@@ -1101,7 +1102,7 @@ async def admin_confirm(c: types.CallbackQuery, state: FSMContext, db: Database)
     await db.set_admin(uid, perms, appointed_by=c.from_user.id)
     await state.clear()
     await state.update_data(ui_message_id=c.message.message_id, ui_chat_id=c.message.chat.id)
-    await safe_call(lambda: c.bot.send_message(
+    await safe_call(lambda: push(c.bot, 
         uid, f"Siz botga admin etib tayinlandingiz.\nUnvoningiz: {admin_level(perms)}",
         reply_markup=kb.back_kb("amenu:home", "Bosh menyu")))
     await show_user(c.message, db, await db.user(uid), True, c.from_user.id)
@@ -1138,7 +1139,7 @@ async def remove_admin_confirm(c: types.CallbackQuery, db: Database):
     if not can_remove_admin(db, c.from_user.id, uid):
         return await c.answer("Siz faqat o‘zingiz tayinlagan adminning adminligini ola olasiz.", show_alert=True)
     await db.remove_admin(uid)
-    await safe_call(lambda: c.bot.send_message(
+    await safe_call(lambda: push(c.bot, 
         uid, "Adminlik huquqlaringiz bekor qilindi.\nSababini bilish uchun «Yordam» bo‘limiga kiring!",
         reply_markup=kb.help_home_kb()))
     await show_user(c.message, db, await db.user(uid), True, c.from_user.id)

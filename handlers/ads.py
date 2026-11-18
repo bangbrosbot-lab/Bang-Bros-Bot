@@ -9,8 +9,10 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 import keyboards as kb
+from config import ADMIN_ID
 from db import Database
 from handlers.filters import AdminOnly
+from pushes import push, push_copy
 from states import Broadcast, Gift
 from utils import (delete_quietly, finish_prompt, is_not_modified, mass_send, money,
                    safe_call, show_prompt, spawn)
@@ -232,8 +234,8 @@ async def broadcast_prepare(c: types.CallbackQuery, state: FSMContext):
 
 
 async def _run_broadcast(bot, ids, src_chat, src_msg, markup, report_chat, report_msg):
-    ok, bad = await mass_send(ids, lambda uid: bot.copy_message(
-        uid, src_chat, src_msg, reply_markup=markup, protect_content=True))
+    ok, bad = await mass_send(ids, lambda uid: push_copy(
+        bot, uid, src_chat, src_msg, reply_markup=markup, protect_content=True), per_second=15)
     await safe_call(lambda: bot.delete_message(src_chat, src_msg))
     await safe_call(lambda: bot.edit_message_text(
         f"Reklama tarqatish yakunlandi.\nJami: {len(ids)}\nYuborildi: {ok}\nYuborilmadi: {bad}",
@@ -373,7 +375,7 @@ async def gift_winners_count(m: types.Message, state: FSMContext):
 
 
 async def _run_gift(bot, ids, body, markup, report_chat, report_msg):
-    ok, _ = await mass_send(ids, lambda uid: bot.send_message(uid, body, reply_markup=markup))
+    ok, _ = await mass_send(ids, lambda uid: push(bot, uid, body, reply_markup=markup), per_second=15)
     await safe_call(lambda: bot.edit_message_text(
         f"Gift e’lon qilindi. Yetkazildi: {ok} ta foydalanuvchi.", chat_id=report_chat, message_id=report_msg))
 
@@ -393,13 +395,16 @@ async def gift_confirm(c: types.CallbackQuery, state: FSMContext, db: Database, 
         return await c.answer("Seans tugagan. Giftni qaytadan boshlang.", show_alert=True)
     await state.clear()  # takroriy bosishdan himoya
     gid = await db.create_gift(kind, d.get("gift_amount", 0), d.get("gift_days", 0), winners)
-    if kind == "money":
-        body = (f"Adminlar obunachilar uchun tekinga {money(d['gift_amount'])} so‘m pul sovg‘a qilishmoqda. Shoshiling! "
-                f"Sovg‘a faqatgina {winners} odamga nasib qiladi, omadingizni qo‘ldan chiqarmang!")
-    else:
-        body = f"{d['gift_days']} kunlik VIP sovg‘a! Sovg‘a faqat {winners} nafar oddiy foydalanuvchiga beriladi. Shoshiling!"
+    prize = f"{money(d['gift_amount'])} so‘m" if kind == "money" else f"{d['gift_days']} kunlik VIP obuna"
+    body = (f"Bizda yangi gift o‘yini boshlandi.\n"
+            f"Yutuq: {prize}\n"
+            f"O‘yinda qatnashish uchun shunchaki «Sovg‘ani olish» tugmasini bosing!\n\n"
+            f"Eslatma: Yutuq faqat {winners} nafar odamga nasib qiladi.\n"
+            f"Shoshiling, omadingizni sinab ko‘ring!")
     markup = kb.rows_kb([("Sovg‘ani olish", f"claimgift:{gid}")])
-    ids = await db.all_user_ids("ordinary" if kind == "vip" else "all")
+    # Gift faqat oddiy foydalanuvchilarga: adminlar (bosh admin ham) olmaydi; VIP gift — VIPsizlarga
+    staff = {ADMIN_ID, *db.admin_ids()}
+    ids = [u for u in await db.all_user_ids("ordinary" if kind == "vip" else "all") if u not in staff]
     await c.message.edit_text(f"Gift e’lon qilinmoqda… Jami: {len(ids)}. Tugagach shu yerda natija chiqadi.")
     spawn(_run_gift(bot, ids, body, markup, c.message.chat.id, c.message.message_id))
     await c.answer()

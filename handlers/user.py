@@ -17,6 +17,7 @@ from db import Database
 from keyboards import (admin_menu, back_kb, blocked_menu, confirm_kb, main_menu,
                        rows_kb)
 from states import TopUp
+from pushes import push
 from timeutil import fmt_local
 from utils import (delete_quietly, finish_prompt, is_not_modified, money, safe_call,
                    show_prompt, username_text)
@@ -216,8 +217,8 @@ async def start(m: types.Message, command: CommandObject, db: Database, bot: Bot
             bonus = int(await db.setting("referral_bonus") or 500)
             credited = await db.credit_referral(uid, valid_ref, bonus)
             if credited:
-                await safe_call(lambda: bot.send_message(
-                    valid_ref, f"Do‘stingiz botga qo‘shildi! Referral balansingizga {money(bonus)} so‘m qo‘shildi."))
+                await safe_call(lambda: push(
+                    bot, valid_ref, f"Do‘stingiz botga qo‘shildi! Referral balansingizga {money(bonus)} so‘m qo‘shildi."))
         await notify_new_user(bot, m.from_user, valid_ref if valid_ref and await db.user(valid_ref) else None)
 
     if not await subscribed(bot, db, uid):
@@ -758,6 +759,8 @@ async def claim_gift(call: types.CallbackQuery, db: Database, bot: Bot):
     u = await db.user(call.from_user.id)
     if u and u["blocked"]:
         return await call.answer(NO_ACCESS, show_alert=True)
+    if is_owner(call.from_user.id) or db.is_admin(call.from_user.id):
+        return await call.answer("Adminlar giftda qatnasha olmaydi.", show_alert=True)
     gid = int(call.data.split(":")[1])
     status, g, last = await db.claim_gift(gid, call.from_user.id)
     if status == "won":
