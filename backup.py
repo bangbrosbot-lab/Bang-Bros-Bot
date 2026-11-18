@@ -12,7 +12,7 @@ async def send_backup(bot, db, chat_id: int, caption: str = "Bang Bros — bazan
     os.close(fd)
     try:
         await db.backup_to(path)
-        await bot.send_document(chat_id, FSInputFile(path, filename="Bang_Bros_bot_latest.db"),
-                                caption=caption, protect_content=True)
+        await bot.send_document(chat_id, FSInputFile(path, filename="bot.db"),
+                                caption=caption, protect_content=False)
     finally:
         os.remove(path)
