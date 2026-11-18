@@ -252,9 +252,19 @@ async def broadcast_done(c: types.CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "bccancel")
 async def broadcast_cancel(c: types.CallbackQuery, state: FSMContext):
     d = await state.get_data()
+
+    # Reklama va agar mavjud bo‘lsa, alohida ko‘rsatma xabarini tozalaymiz.
     if d.get("source_chat") and d.get("source_message"):
         await safe_call(lambda: c.bot.delete_message(d["source_chat"], d["source_message"]))
-    await finish_prompt(c.message, state, "Reklama bekor qilindi.")
+    prompt_id, prompt_chat_id = d.get("prompt_id"), d.get("prompt_chat_id")
+    if prompt_id and prompt_chat_id:
+        await safe_call(lambda: c.bot.delete_message(prompt_chat_id, prompt_id))
+
+    # Bekor qilingani haqida xabar qoldirmasdan darhol Ish stoli menyusini ochamiz.
+    await state.clear()
+    menu = await c.message.answer("Ish stoli", reply_markup=kb.desk())
+    await state.update_data(prompt_id=menu.message_id, prompt_chat_id=menu.chat.id,
+                            ui_message_id=menu.message_id, ui_chat_id=menu.chat.id)
     await c.answer()
 
 
